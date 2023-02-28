@@ -1,0 +1,50 @@
+[package]
+name = "goontunes"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# basic
+clap = { version = "4.1.6", features = ["env", "derive"] }
+color-eyre = "0.6.2"
+dirs = "4.0.0"
+env_logger = "0.10.0"
+eyre = "0.6.8"
+futures = "0.3.26"
+url = "2.3.1"
+chrono = "*"
+tokio = { version = "1.25.0", features = ["full"] }
+tracing-subscriber = "0.3.16"
+lazy_static = "1.4.0"
+strum = { version = "0.24.1", features = ["derive"] }
+regex = "1.7.1"
+linkify = "0.9.0" #extract urls from text
+serde = "*"
+serde_json = "*"
+
+# matrix support
+matrix-sdk = { version = "0.6.2", features = ["eyre", "e2e-encryption", "sled", "experimental-timeline", "markdown"] }
+
+# spotify support
+rspotify = { version = "0.11.5", features = ["cli"] }
+
+# discord support
+twilight-cache-inmemory = "0.14.0"
+twilight-gateway = "0.14.0"
+twilight-http = "0.14.0"
+twilight-model = "0.14.0"
+serenity = {version = "0.11.5", default-features = false, features = ["client", "gateway", "rustls_backend", "model"] } # disable default `framework` feature
+
+# database support
+surrealdb = {version = "1.0.0-beta.8", features = ["kv-rocksdb", "kv-mem"]}
+serde_with = "2.2.0"
+async-trait = "0.1.64"
+
+[patch.crates-io]
+# matrix-sdk needs this, which specifies old version of zeroize for weird compat reason : https://github.com/dalek-cryptography/x25519-dalek/commit/adbd0e37a414d2c8ce2e6008bf688101347f10ce
+# see : https://github.com/dalek-cryptography/x25519-dalek/issues/92
+# waiting on 2.0 : https://github.com/dalek-cryptography/x25519-dalek/issues/99
+x25519-dalek = { path = "forks/x25519-dalek" }
+surrealdb = { path = "forks/surrealdb/lib"}
