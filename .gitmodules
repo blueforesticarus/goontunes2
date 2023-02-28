@@ -1,0 +1,6 @@
+[submodule "forks/surrealdb"]
+	path = forks/surrealdb
+	url = git@github.com:segfault-s-pull-requests/surrealdb.git
+[submodule "forks/x25519-dalek"]
+	path = forks/x25519-dalek
+	url = git@github.com:segfault-s-pull-requests/x25519-dalek.git
