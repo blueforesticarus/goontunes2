@@ -17,7 +17,7 @@ use surrealdb::engine::local::Mem;
 use surrealdb::kvs::Datastore;
 use surrealdb::method::UseNsDb;
 use surrealdb::opt::from_json;
-use surrealdb::sql::{thing, Array, Datetime, Id, Object, Thing, Value};
+use surrealdb::sql::{thing, Array, Datetime, Id, Object, Part, Strand, Table, Thing, Value};
 use surrealdb::{Connection, Surreal};
 use url::Url;
 
@@ -28,12 +28,23 @@ async fn main() -> Result<()> {
     let db = Surreal::new::<Mem>(()).await?;
     db.use_ns("default").use_db("default").await?;
 
+    /*
+    dbg!(db.query("CREATE mytable SET id = 'AAA', data = 5").await?);
+    dbg!(
+        db.query("CREATE mytable:{ a: '123', b: 3 } SET id = 'AAA', data = 5, a = '123', b= 3")
+            .await?
+    );
+    */
+
     // --- Create
     let t1 = Message::create(
         &db,
         Message {
-            service: ChatService::Discord,
-            id: "asdfasdfeasf".into(),
+            channel: Channel {
+                service: ChatService::Discord,
+                id: "club cyberia".to_string(),
+            },
+            id: "testmessageid".into(),
             sender: Sender {
                 service: ChatService::Discord,
                 id: "sushidude".to_string(),
@@ -51,7 +62,10 @@ async fn main() -> Result<()> {
     let t2 = Message::create(
         &db,
         Message {
-            service: ChatService::Matrix,
+            channel: Channel {
+                service: ChatService::Discord,
+                id: "club cyberia".to_string(),
+            },
             id: "wer4qwer".into(),
             sender: Sender {
                 service: ChatService::Discord,
@@ -110,17 +124,25 @@ pub enum Kind {
     User,
 }
 
+/// Ideally we would not repeat data, however, there is currently no way to use struct info when serializing a field in serde (even with serde_as)
+/// Additionally rust has no conventional way for converting subsets of fields in a struct. So instead we repeat the service enum in 3 places: id.service, sender.service, channel.service
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub service: ChatService,
-    //pub channel: String,
+    //#[serde(skip_serializing)]
     pub id: String,
+    pub channel: Channel,
 
     #[serde_as(as = "SurrealLink")]
     pub sender: Sender,
     pub date: DateTime<Utc>,
     pub links: Vec<Link>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Channel {
+    pub service: ChatService,
+    pub id: String,
 }
 
 #[serde_as]
@@ -270,9 +292,13 @@ pub trait SurrealTable: Serialize + Send + Sized {
     const NAME: &'static str;
 
     async fn create(db: &Surreal<impl Connection>, msg: Self) -> Result<String> {
-        let sql = "CREATE message CONTENT $data";
-        //let msg: Value = msg.into();
-        let mut response = db.query(sql).bind(("data", msg)).await?;
+        let id: Value = match msg.id() {
+            Some(id) => Thing::from((Self::NAME.to_string(), id)).into(),
+            None => Table::from(Self::NAME.to_string()).into(),
+        };
+
+        let sql = "CREATE $id CONTENT $data";
+        let mut response = db.query(sql).bind_raw("id", id).bind(("data", msg)).await?;
 
         //let v: Vec<Value> = response.take(0)?;
         /*
@@ -281,14 +307,20 @@ pub trait SurrealTable: Serialize + Send + Sized {
 
         //changed surreal crate to expose inner map because of above issue
         //let v: Vec<Value> = response.0.remove(&0).unwrap()?;
-
         let v: Option<String> = response.take("id")?;
 
         dbg!(&v);
         Ok(v.unwrap())
     }
+
+    fn id(&self) -> Option<Id> {
+        None
+    }
 }
 
 impl SurrealTable for Message {
     const NAME: &'static str = "message";
+    // fn id(&self) -> Option<Id> {
+    //     Some(self.id.clone().into())
+    // }
 }

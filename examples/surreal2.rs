@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use surrealdb::{
-    opt::from_json,
-    sql::{Array, Datetime, Id, Object, Thing, Value},
+    opt::{from_json, IntoQuery},
+    sql::{Array, Datetime, Id, Object, Table, Thing, Value},
 };
 use url::Url;
 
@@ -15,6 +15,14 @@ pub struct Link {
 }
 
 fn main() {
+    let sql = "CREATE message CONTENT $data".into_query().unwrap();
+    dbg!(sql);
+
+    let a = Value::Table(Table::from("test"));
+    let a2 = json!(("asdf", a));
+    dbg!(&a2);
+
+    /*
     let link = Link {
         service: 0,
         url: Url::parse("http://google.com").unwrap(),
@@ -28,4 +36,5 @@ fn main() {
 
     let v = from_json(j);
     dbg!(&v);
+    */
 }
