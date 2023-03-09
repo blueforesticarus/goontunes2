@@ -1,29 +1,19 @@
+#![feature(async_closure)]
+#![feature(associated_type_defaults)]
+
+use serde::{Deserialize, Serialize};
+use service::matrix::MatrixConfig;
 use std::fs::File;
 
-enum ServiceConfig {}
+pub mod config;
+pub mod database;
+pub mod traits;
+pub mod types;
 
-enum PlaylistMember {
-    //Channel(Channel)
-    //Playlist(Playlist)
-    //File(File)
+pub mod utils {
+    pub mod channel;
+    pub mod links;
 }
-
-struct PlaylistConfig {
-    inputs: Vec<PlaylistMember>,
-    outputs: Vec<PlaylistMember>,
-    sync: Vec<PlaylistMember>, // is input and output (ex. file)
-
-    transforms: (), // filter, transform, bash script
-}
-
-struct Config {
-    services: Vec<ServiceConfig>,
-    playlists: Vec<PlaylistConfig>,
-}
-
-mod data;
-pub mod links;
-mod service {
-    mod spotify;
-    mod youtube;
+pub mod service {
+    pub mod matrix;
 }

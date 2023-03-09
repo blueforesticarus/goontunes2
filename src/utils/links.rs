@@ -3,7 +3,7 @@ use regex::Regex;
 use strum::{Display, EnumString};
 use url::Url;
 
-use crate::data::MusicService;
+use crate::types::{Link, MusicService};
 
 pub fn extract_urls(content: String) -> Vec<Url> {
     let mut finder = LinkFinder::new();
@@ -15,25 +15,6 @@ pub fn extract_urls(content: String) -> Vec<Url> {
         .collect();
 
     links
-}
-
-#[derive(Debug, Clone, EnumString, Display)]
-#[strum(ascii_case_insensitive)]
-#[strum(serialize_all = "lowercase")]
-pub enum Kind {
-    Artist,
-    Album,
-    Track,
-    Playlist,
-    User,
-}
-
-#[derive(Debug, Clone)]
-pub struct Link {
-    pub service: MusicService,
-    pub url: Url,
-    pub id: String,
-    pub kind: Option<Kind>,
 }
 
 pub fn parse_url(url: Url) -> Option<Link> {
@@ -93,7 +74,7 @@ pub fn parse_url(url: Url) -> Option<Link> {
 
 #[cfg(test)]
 mod tests {
-    use crate::links::{extract_urls, parse_url, Link};
+    use crate::utils::links::{extract_urls, parse_url, Link};
 
     #[test]
     fn url_extract() {

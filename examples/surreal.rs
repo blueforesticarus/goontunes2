@@ -1,14 +1,14 @@
 #![allow(unused)]
 use chrono::{DateTime, Utc};
 // While exploring, remove for prod.
-use eyre::{anyhow, Result};
+use eyre::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use serde_with::{
     serde_as, DeserializeAs, DeserializeFromStr, SerializeAs, SerializeDisplay, TryFromInto,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::str::FromStr;
 use strum::{Display, EnumString};
@@ -28,13 +28,16 @@ async fn main() -> Result<()> {
     let db = Surreal::new::<Mem>(()).await?;
     db.use_ns("default").use_db("default").await?;
 
-    /*
-    dbg!(db.query("CREATE mytable SET id = 'AAA', data = 5").await?);
-    dbg!(
-        db.query("CREATE mytable:{ a: '123', b: 3 } SET id = 'AAA', data = 5, a = '123', b= 3")
-            .await?
-    );
-    */
+    // db.create(("test", "testid"))
+    //     .content(HashMap::from([("foo", 5)]))
+    //     .await?;
+
+    // dbg!(db.query("CREATE mytable SET id = 'AAA', data = 5").await?);
+    // dbg!(
+    //     db.query("CREATE mytable:{ a: '123', b: 3 } SET id = 'AAA', data = 5")
+    //         .await?
+    // );
+    // dbg!(db.query("SELECT * from mytable WHERE id.b = 3").await?);
 
     // --- Create
     let t1 = Message::create(
@@ -44,8 +47,8 @@ async fn main() -> Result<()> {
                 service: ChatService::Discord,
                 id: "club cyberia".to_string(),
             },
-            id: "testmessageid".into(),
-            sender: Sender {
+            id: MessageId("testmessageid".into()),
+            sender: SenderId {
                 service: ChatService::Discord,
                 id: "sushidude".to_string(),
             },
@@ -66,8 +69,8 @@ async fn main() -> Result<()> {
                 service: ChatService::Discord,
                 id: "club cyberia".to_string(),
             },
-            id: "wer4qwer".into(),
-            sender: Sender {
+            id: MessageId("wer4qwer".into()),
+            sender: SenderId {
                 service: ChatService::Discord,
                 id: "segfault".to_string(),
             },
@@ -82,13 +85,46 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // --- Select
-    let sql = "SELECT * from message";
-    let mut res = db.query(sql).await?;
-    for object in res.0.remove(&0).unwrap().unwrap() {
-        println!("record {}", object);
-    }
+    let r = Reaction {
+        id: MessageId("testreactid".into()),
+        sender: SenderId {
+            service: ChatService::Discord,
+            id: "segfault".to_string(),
+        },
+        target: MessageId("testmessageid".into()),
+        date: Utc::now(),
+        txt: vec!["👍".into()],
+    };
 
+    let sql = "RELATE $sender->reaction->$message SET date = $date, txt = $txt";
+    let mut res = db
+        .query(sql)
+        .bind(("sender", r.sender.to_thing()))
+        .bind(("message", r.target.to_thing()))
+        .bind(("data", r.date))
+        .bind(("txt", r.txt))
+        .await?;
+
+    dbg!(res);
+
+    // --- Select
+    let sql = "SELECT * from message WHERE sender = $sender";
+    let mut res = db
+        .query(sql)
+        .bind((
+            "sender",
+            SenderId {
+                service: ChatService::Discord,
+                id: "segfault".to_string(),
+            }
+            .to_thing(),
+        ))
+        .await?;
+    for object in res.0.remove(&0).unwrap().unwrap() {
+        println!("{}", object);
+        let parsed: Message = serde_json::from_value(json!(object))?;
+        dbg!(parsed);
+    }
     Ok(())
 }
 
@@ -124,17 +160,20 @@ pub enum Kind {
     User,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageId(String);
 /// Ideally we would not repeat data, however, there is currently no way to use struct info when serializing a field in serde (even with serde_as)
 /// Additionally rust has no conventional way for converting subsets of fields in a struct. So instead we repeat the service enum in 3 places: id.service, sender.service, channel.service
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     //#[serde(skip_serializing)]
-    pub id: String,
+    #[serde_as(as = "SurrealAsLink")]
+    pub id: MessageId,
     pub channel: Channel,
 
-    #[serde_as(as = "SurrealLink")]
-    pub sender: Sender,
+    #[serde_as(as = "SurrealAsLink")]
+    pub sender: SenderId,
     pub date: DateTime<Utc>,
     pub links: Vec<Link>,
 }
@@ -145,40 +184,79 @@ pub struct Channel {
     pub id: String,
 }
 
-#[serde_as]
 #[derive(Debug, Clone)]
-pub struct Sender {
+pub struct SenderId {
     pub service: ChatService,
     pub id: String,
 }
 
-mod sender_impls {
+trait SurrealLink: Sized + Into<Id> + TryFrom<Id, Error = eyre::Error> {
+    const NAME: &'static str;
+
+    fn to_thing(self) -> Thing {
+        Thing {
+            tb: Self::NAME.to_string(),
+            id: self.into(),
+        }
+    }
+
+    fn try_from_thing(thing: Thing) -> Result<Self> {
+        if thing.tb == Self::NAME {
+            thing.id.try_into().wrap_err("")
+        } else {
+            bail!("expected: {}, got:{}", Self::NAME, thing.tb)
+        }
+    }
+}
+
+impl SurrealLink for MessageId {
+    const NAME: &'static str = "message";
+}
+
+impl SurrealLink for SenderId {
+    const NAME: &'static str = "sender";
+}
+
+// needs to stored with RELATE
+#[derive(Debug, Clone)]
+pub struct Reaction {
+    pub sender: SenderId,
+    pub target: MessageId,
+    pub date: DateTime<Utc>,
+    pub id: MessageId,
+
+    pub txt: Vec<String>, //Normally single, but lets support multible for the hell of it.
+}
+
+mod link_impls {
+
     use serde_json::json;
     use surrealdb::{
         opt::from_json,
-        sql::{Array, Id, Thing},
+        sql::{Array, Id, Thing, Value},
     };
 
-    use super::Sender;
+    use crate::{MessageId, SurrealLink};
 
-    impl From<Sender> for Thing {
-        fn from(value: Sender) -> Self {
-            Self {
-                tb: "sender".to_string(),
-                id: value.into(),
-            }
-        }
-    }
+    use super::SenderId;
 
-    impl TryFrom<Thing> for Sender {
+    impl TryFrom<Id> for MessageId {
         type Error = eyre::Error;
 
-        fn try_from(value: Thing) -> std::result::Result<Self, Self::Error> {
-            value.id.try_into()
+        fn try_from(value: Id) -> Result<Self, Self::Error> {
+            dbg!(&value);
+            dbg!(json!(Value::from(value.clone())));
+            let v: Self = serde_json::from_value(json!(Value::from(value)))?;
+            Ok(v)
+        }
+
+    impl From<MessageId> for Id {
+        fn from(value: MessageId) -> Self {
+            Id::String(value.0)
         }
     }
 
-    impl TryFrom<Id> for Sender {
+    impl TryFrom<Id> for SenderId {
         type Error = eyre::Error;
 
         fn try_from(value: Id) -> std::result::Result<Self, Self::Error> {
@@ -193,28 +271,29 @@ mod sender_impls {
             eyre::bail!("blah")
         }
     }
-    impl From<Sender> for Id {
-        fn from(value: Sender) -> Self {
+
+    impl From<SenderId> for Id {
+        fn from(value: SenderId) -> Self {
             Id::from(vec![value.service.to_string(), value.id])
         }
     }
 }
 
-struct SurrealLink;
-impl<T> SerializeAs<T> for SurrealLink
+struct SurrealAsLink;
+impl<T> SerializeAs<T> for SurrealAsLink
 where
-    T: Into<Thing> + Clone,
+    T: SurrealLink + Clone,
 {
     fn serialize_as<S>(source: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let value: Thing = source.clone().into();
+        let value: Thing = source.clone().to_thing();
         value.serialize(serializer)
     }
 }
 
-impl<'de, E: Display, T: TryFrom<Thing, Error = E>> DeserializeAs<'de, T> for SurrealLink {
+impl<'de, T: SurrealLink> DeserializeAs<'de, T> for SurrealAsLink {
     fn deserialize_as<D>(deserializer: D) -> Result<T, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -226,7 +305,7 @@ impl<'de, E: Display, T: TryFrom<Thing, Error = E>> DeserializeAs<'de, T> for Su
 
         let s = String::deserialize(deserializer).map_err(serde::de::Error::custom)?;
         let t = thing(&s).map_err(serde::de::Error::custom)?;
-        t.try_into().map_err(serde::de::Error::custom)
+        T::try_from_thing(t).map_err(serde::de::Error::custom)
     }
 }
 

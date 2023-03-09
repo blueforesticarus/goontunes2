@@ -1,1 +1,4 @@
 /target
+.matrix_crypto_cache/
+.spotify_token_cache.json
+matrix_security_key

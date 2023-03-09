@@ -221,6 +221,7 @@ fn install_verification_handlers(client: Client) {
         },
     );
 }
+
 async fn sync(client: Client) -> matrix_sdk::Result<()> {
     install_verification_handlers(client.clone());
 
@@ -321,7 +322,7 @@ async fn sync(client: Client) -> matrix_sdk::Result<()> {
                         scan_room_history(room_to_scan).await;
                     }
                     "!scan_all" => {
-                        let ancestry = get_room_ancestry(room_to_scan).await;
+                        let ancestry = RoomAncestry::get(room_to_scan).await;
                         for room_to_scan in
                             ancestry.lineage.into_iter().filter_map(Result::ok).rev()
                         {
@@ -329,7 +330,7 @@ async fn sync(client: Client) -> matrix_sdk::Result<()> {
                         }
                     }
                     "!history" => {
-                        let ancestry = get_room_ancestry(room_to_scan).await;
+                        let ancestry = RoomAncestry::get(room_to_scan).await;
                         let msg: Vec<String> = ancestry
                             .lineage
                             .iter()
@@ -470,60 +471,64 @@ pub struct RoomAncestry {
     pub lineage: Vec<Result<Room, OwnedRoomId>>,
     pub offset: usize,
 }
-async fn get_room_ancestry(room: Room) -> RoomAncestry {
-    //! scan for descendants and ancestors of room,
-    //! TODO joining if needed and possible.
 
-    let mut ret = RoomAncestry::default();
-    let client = room.client().clone();
+impl RoomAncestry {
+    async fn get(room: Room) -> RoomAncestry {
+        //! scan for descendants and ancestors of room,
+        //! TODO joining if needed and possible.
 
-    async fn get_previous(room: Room) -> Option<OwnedRoomId> {
-        let created: Vec<Raw<SyncRoomCreateEvent>> = room.get_state_events_static().await.unwrap();
-        let created = created.get(0).unwrap();
-        let event = created.deserialize().unwrap();
-        let event = event.as_original().unwrap();
-        event
-            .content
-            .predecessor
-            .clone()
-            .map(|previous_room| previous_room.room_id)
+        let mut ret = RoomAncestry::default();
+        let client = room.client().clone();
+
+        async fn get_previous(room: Room) -> Option<OwnedRoomId> {
+            let created: Vec<Raw<SyncRoomCreateEvent>> =
+                room.get_state_events_static().await.unwrap();
+            let created = created.get(0).unwrap();
+            let event = created.deserialize().unwrap();
+            let event = event.as_original().unwrap();
+            event
+                .content
+                .predecessor
+                .clone()
+                .map(|previous_room| previous_room.room_id)
+        }
+
+        let mut current = room.clone();
+        while let Some(roomid) = get_previous(current).await {
+            match client.get_room(&roomid) {
+                Some(v) => {
+                    current = v.clone();
+                    ret.lineage.insert(0, Ok(v));
+                }
+                None => {
+                    println!("cannot access room {}", roomid);
+                    ret.lineage.push(Err(roomid));
+                    break;
+                }
+            };
+        }
+
+        ret.offset = ret.lineage.len();
+        ret.lineage.push(Ok(room.clone()));
+
+        let mut current = room.clone();
+        while let Some(tombstone) = current.tombstone() {
+            let roomid = tombstone.replacement_room;
+            match client.get_room(&roomid) {
+                Some(v) => {
+                    current = v.clone();
+                    ret.lineage.push(Ok(v));
+                }
+                None => {
+                    println!("cannot access room {}", roomid);
+                    ret.lineage.push(Err(roomid));
+                    break;
+                }
+            };
+        }
+
+        ret
     }
-
-    let mut current = room.clone();
-    while let Some(roomid) = get_previous(current).await {
-        match client.get_room(&roomid) {
-            Some(v) => {
-                current = v.clone();
-                ret.lineage.insert(0, Ok(v));
-            }
-            None => {
-                println!("cannot access room {}", roomid);
-                ret.lineage.push(Err(roomid));
-                break;
-            }
-        };
-    }
-
-    ret.offset = ret.lineage.len();
-    ret.lineage.push(Ok(room.clone()));
-
-    let mut current = room.clone();
-    while let Some(tombstone) = current.tombstone() {
-        let roomid = tombstone.replacement_room;
-        match client.get_room(&roomid) {
-            Some(v) => {
-                current = v.clone();
-                ret.lineage.push(Ok(v));
-            }
-            None => {
-                println!("cannot access room {}", roomid);
-                ret.lineage.push(Err(roomid));
-                break;
-            }
-        };
-    }
-
-    ret
 }
 
 #[derive(Parser, Debug)]
