@@ -7,8 +7,23 @@ pub type ReactChannel = Mpsc<Reaction, 100>;
 
 pub trait ChatService {
     // Note: weirdness with ambiguous type
-    fn message_channel(&mut self) -> &mut <MessageChannel as Channel>::Receiver;
-    fn react_channel(&mut self) -> &mut <ReactChannel as Channel>::Receiver;
+    // Note cannot return &mut of Receiver because then you couldn't poll simultaneously (can't have 2 &mut self)
+    fn message_channel(&mut self) -> <MessageChannel as Channel>::Receiver;
+    fn react_channel(&mut self) -> <ReactChannel as Channel>::Receiver;
 
     //fn rescan_since();
+}
+
+#[async_trait::async_trait]
+pub trait PlaylistService {
+    /*
+    async fn fetch_playlist(id : String) -> Collection;
+    async fn fetch_playlist_tracks(id : String) -> Collection;
+    async fn get_track_id(id : String) string
+    async fn playlist_inserttracks(string, []Pl_Ins) int
+    async fn deletetracks(string, []Pl_Rm) int
+    async fn playlist_description(string, string) error
+    async fn create_playlist(string) string
+    async fn list_playlists() []Collection
+    */
 }

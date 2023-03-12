@@ -1,7 +1,7 @@
 // lets use surreal db
 // this time lets build from the ground up for persistence
 
-use crate::database::SurrealLink;
+use crate::database::{SurrealAsLink, SurrealLink, SurrealTable};
 
 use chrono::{offset::Utc, DateTime};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ use serde_with::{serde_as, DeserializeFromStr, SerializeDisplay};
 use strum::{Display, EnumString};
 use url::Url;
 
+// MUSIC SERVICE TYPES
 #[derive(
     Debug, Clone, PartialEq, Eq, Display, EnumString, DeserializeFromStr, SerializeDisplay,
 )]
@@ -20,6 +21,38 @@ pub enum MusicService {
     Soundcloud,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackId {
+    pub service: MusicService,
+    pub id: String,
+}
+impl SurrealLink for TrackId {
+    const NAME: &'static str = "track";
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionId {
+    pub service: MusicService,
+    pub id: String,
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Collection {
+    id: CollectionId,
+    kind: Kind,
+    owner: String,
+    size: usize,
+    ignored: bool,
+    rev: String,
+    date: DateTime<Utc>,
+    name: String,
+
+    #[serde_as(as = "Vec<SurrealAsLink>")]
+    tracks: Vec<TrackId>,
+}
+
+// CHAT SERVICE TYPES
 #[derive(
     Debug, Clone, PartialEq, Eq, Display, EnumString, DeserializeFromStr, SerializeDisplay,
 )]
@@ -47,14 +80,20 @@ pub struct Channel {
     pub id: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Sender {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SenderId {
     pub service: ChatService,
     pub id: String,
 }
+impl SurrealLink for SenderId {
+    const NAME: &'static str = "sender";
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageId(String);
+pub struct MessageId(pub String);
+impl SurrealLink for MessageId {
+    const NAME: &'static str = "message";
+}
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,11 +101,17 @@ pub struct Message {
     pub id: MessageId,
     pub channel: Channel,
 
-    #[serde_as(as = "SurrealLink")]
-    pub sender: Sender,
+    #[serde_as(as = "SurrealAsLink")]
+    pub sender: SenderId,
     pub date: DateTime<Utc>,
     pub text: Option<String>,
     pub links: Vec<Link>,
+}
+impl SurrealTable for Message {
+    const NAME: &'static str = "message";
+    // fn id(&self) -> Option<Id> {
+    //     Some(self.id.clone().into())
+    // }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -80,7 +125,7 @@ pub struct Link {
 // needs to stored with RELATE
 #[derive(Debug, Clone)]
 pub struct Reaction {
-    pub sender: Sender,
+    pub sender: SenderId,
     pub target: MessageId,
     pub date: DateTime<Utc>,
     pub id: MessageId,

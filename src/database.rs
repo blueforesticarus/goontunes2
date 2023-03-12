@@ -1,13 +1,14 @@
 use chrono::{DateTime, Utc};
 // While exploring, remove for prod.
 use async_trait::async_trait;
-use eyre::{anyhow, Result};
+use eyre::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use serde_with::{
     serde_as, DeserializeAs, DeserializeFromStr, SerializeAs, SerializeDisplay, TryFromInto,
 };
+use std::any::type_name;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::str::FromStr;
@@ -21,22 +22,60 @@ use surrealdb::sql::{thing, Array, Datetime, Id, Object, Part, Strand, Table, Th
 use surrealdb::{Connection, Surreal};
 use url::Url;
 
-/// A serde_as mixin for Links to other tables
-pub struct SurrealLink;
-impl<T> SerializeAs<T> for SurrealLink
+pub trait SurrealLink: Sized + Serialize + DeserializeOwned {
+    const NAME: &'static str;
+
+    fn try_to_thing(self) -> Result<Thing> {
+        Ok(Thing {
+            tb: Self::NAME.to_string(),
+            id: self.try_to_id()?,
+        })
+    }
+
+    fn try_from_thing(thing: Thing) -> Result<Self> {
+        if thing.tb == Self::NAME {
+            Self::try_from_id(thing.id).wrap_err("")
+        } else {
+            bail!("expected: {}, got:{}", Self::NAME, thing.tb)
+        }
+    }
+
+    fn try_to_id(&self) -> Result<Id> {
+        let value = from_json(serde_json::to_value(self)?);
+        Ok(match value {
+            Value::Number(v) => v.as_int().into(),
+            Value::Strand(v) => v.into(),
+            Value::Datetime(v) => v.to_raw().into(),
+            Value::Uuid(v) => v.into(),
+            Value::Array(v) => v.into(),
+            Value::Object(v) => v.into(),
+            _ => panic!("?? {:?}", value),
+        })
+    }
+
+    fn try_from_id(id: Id) -> Result<Self> {
+        serde_json::from_value(json!(id)).context(format!("{:?} {}", id, type_name::<Self>()))
+    }
+}
+
+pub struct SurrealAsLink;
+impl<T> SerializeAs<T> for SurrealAsLink
 where
-    T: Into<Thing> + Clone,
+    T: SurrealLink + Clone,
 {
     fn serialize_as<S>(source: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let value: Thing = source.clone().into();
+        let value: Thing = source
+            .clone()
+            .try_to_thing()
+            .map_err(serde::ser::Error::custom)?;
         value.serialize(serializer)
     }
 }
 
-impl<'de, E: Display, T: TryFrom<Thing, Error = E>> DeserializeAs<'de, T> for SurrealLink {
+impl<'de, T: SurrealLink> DeserializeAs<'de, T> for SurrealAsLink {
     fn deserialize_as<D>(deserializer: D) -> Result<T, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -48,11 +87,10 @@ impl<'de, E: Display, T: TryFrom<Thing, Error = E>> DeserializeAs<'de, T> for Su
 
         let s = String::deserialize(deserializer).map_err(serde::de::Error::custom)?;
         let t = thing(&s).map_err(serde::de::Error::custom)?;
-        t.try_into().map_err(serde::de::Error::custom)
+        T::try_from_thing(t).map_err(serde::de::Error::custom)
     }
 }
 
-/// convenience methods for a struct which is to be stored in an surreal table
 #[async_trait]
 pub trait SurrealTable: Serialize + Send + Sized {
     //type Item: Serialize + Send = Self;
@@ -82,51 +120,6 @@ pub trait SurrealTable: Serialize + Send + Sized {
 
     fn id(&self) -> Option<Id> {
         None
-    }
-}
-
-mod sender_impls {
-    use serde_json::json;
-    use surrealdb::sql::{Array, Id, Thing};
-
-    use crate::types::Sender;
-
-    impl From<Sender> for Thing {
-        fn from(value: Sender) -> Self {
-            Self {
-                tb: "sender".to_string(),
-                id: value.into(),
-            }
-        }
-    }
-
-    impl TryFrom<Thing> for Sender {
-        type Error = eyre::Error;
-
-        fn try_from(value: Thing) -> std::result::Result<Self, Self::Error> {
-            value.id.try_into()
-        }
-    }
-
-    impl TryFrom<Id> for Sender {
-        type Error = eyre::Error;
-
-        fn try_from(value: Id) -> std::result::Result<Self, Self::Error> {
-            if let Id::Array(Array(a)) = value {
-                if let [a, b] = &a[..] {
-                    return Ok(Self {
-                        service: serde_json::from_value(json!(a))?,
-                        id: a.to_string(),
-                    });
-                };
-            };
-            eyre::bail!("blah")
-        }
-    }
-    impl From<Sender> for Id {
-        fn from(value: Sender) -> Self {
-            Id::from(vec![value.service.to_string(), value.id])
-        }
     }
 }
 

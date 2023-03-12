@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use std::{io::stderr, path::PathBuf};
 
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Context, ContextCompat, Result};
-use goontunes::{config::Config, service::matrix::MatrixClient};
+use goontunes::{config::Config, service::matrix::MatrixClient, traits::ChatService};
+use postage::stream::Stream;
 
 #[derive(Debug, Clone, ValueEnum)]
 enum GenerateKind {
@@ -37,15 +38,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     //TODO write pull request https://gitlab.com/ijackson/rust-shellexpand/-/issues/8
-    let path: PathBuf = shellexpand::tilde(&cli.config).to_string().into();
-    let path = path.canonicalize()?;
+    let path: PathBuf = shellexpand::path::tilde(&cli.config).into();
 
     if let Some(mode) = cli.generate {
         generate(mode, path)?;
         return Ok(());
     }
 
-    let txt = std::fs::read_to_string(path)?;
+    let txt = std::fs::read_to_string(&path).context(path.to_string_lossy().to_string())?;
     let config: Config = serde_json::from_str(&txt)?;
 
     //TODO standardize
@@ -70,9 +70,13 @@ fn generate(mode: GenerateKind, path: PathBuf) -> Result<()> {
                 bail!("config path {} exists", path.to_string_lossy())
             }
 
-            std::fs::write(path, txt)?;
+            std::fs::write(&path, txt)?;
+            println!("default config written to => {:?}", path);
         }
-        GenerateKind::Print => println!("{}", txt),
+        GenerateKind::Print => {
+            eprintln!("# {:?}", path);
+            println!("{}", txt);
+        }
     };
 
     Ok(())
@@ -81,7 +85,27 @@ fn generate(mode: GenerateKind, path: PathBuf) -> Result<()> {
 async fn init(config: Config) -> Result<()> {
     for service_config in config.services.iter() {
         match service_config {
-            goontunes::config::ServiceConfig::Matrix(c) => MatrixClient::connect(c.clone()).await?,
+            goontunes::config::ServiceConfig::Matrix(c) => {
+                let mut client = MatrixClient::connect(c.clone()).await?;
+
+                let mut mrx = client.message_channel();
+                let mut rrx = client.react_channel();
+                //TODO clone db handle
+
+                // do something with links
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            Some(message) = mrx.recv() => {
+                                println!("{} {:?}", message.sender.id, message.links[0].url)
+                            },
+                            Some(reaction) = rrx.recv() => {
+                                println!("{} {:?}", reaction.sender.id, reaction.txt)
+                            }
+                        };
+                    }
+                });
+            }
         };
     }
 

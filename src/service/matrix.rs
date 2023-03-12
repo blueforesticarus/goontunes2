@@ -5,16 +5,17 @@ use crate::{
         links::{extract_urls, parse_url},
     },
 };
+use matrix_sdk_crypto::ReadOnlyAccount;
 use serde::{Deserialize, Serialize};
 use std::{
     default, fmt::Display, io::Write, ops::DerefMut, path::PathBuf, str::FromStr, sync::Arc,
 };
 
 use clap::Parser;
-use eyre::Result;
+use eyre::{Context, Result};
 use futures::{lock::Mutex, pin_mut, stream::StreamExt, Sink};
 use matrix_sdk::{
-    config::SyncSettings,
+    config::{StoreConfig, SyncSettings},
     encryption::verification::{format_emojis, Emoji, SasVerification, Verification},
     event_handler::Ctx,
     room::{MessagesOptions, Room},
@@ -45,7 +46,8 @@ use matrix_sdk::{
         serde::Raw,
         OwnedRoomId, OwnedUserId, RoomId, UserId,
     },
-    Client, LoopCtrl,
+    store::SledStateStore,
+    Client, LoopCtrl, StoreError,
 };
 
 use tokio::time::{sleep, Duration};
@@ -67,9 +69,6 @@ pub struct MatrixConfig {
     /// The password that should be used for the login.
     pub auth: MatrixAuth,
 
-    /// TODO autowrite
-    pub device: Option<String>,
-
     /// TODO this needs to default to some kind of .cache/goontunes dir
     #[serde(default = "default_sled_path")]
     pub matrix_crypto_store: String,
@@ -78,10 +77,9 @@ pub struct MatrixConfig {
 impl MatrixConfig {
     pub fn example() -> Self {
         Self {
-            homeserver: "matrix.org".try_into().unwrap(),
+            homeserver: "https://matrix.org".try_into().unwrap(),
             username: "<username>".into(),
             auth: MatrixAuth::Password("<password>".into()),
-            device: None,
             matrix_crypto_store: default_sled_path(),
         }
     }
@@ -100,26 +98,49 @@ pub enum MatrixAuth {
 pub struct MatrixClient {
     client: Client,
     config: MatrixConfig,
-    message_rx: <MessageChannel as Channel>::Receiver,
-    react_rx: <ReactChannel as Channel>::Receiver,
+    message_rx: Option<<MessageChannel as Channel>::Receiver>,
+    react_rx: Option<<ReactChannel as Channel>::Receiver>,
 }
 
 impl MatrixClient {
     pub async fn connect(config: MatrixConfig) -> Result<MatrixClient> {
-        // 1. Config client (and crypto store)
+        // Create crypto store
+        let mut home: PathBuf = shellexpand::full(&config.matrix_crypto_store)?
+            .to_string()
+            .try_into()?;
+
+        std::fs::create_dir_all(&home)?; //TODO I don't like creating, .cache if it doesn't exist
+        home.push(&config.username);
+
+        let mut store_builder = SledStateStore::builder();
+        store_builder.path(home.clone());
+        store_builder.passphrase("passphrase".to_string());
+
+        let state_store = store_builder.build()?;
+        let crypto_store = state_store.open_crypto_store()?;
+        use matrix_sdk_crypto::store::CryptoStore;
+
+        // Check for existing device id (do manually so we can extract device id)
+        let device = crypto_store
+            .load_account()
+            .await
+            .context(format!(
+                "matrix store corrupted, delete {:?} and redo verification",
+                home
+            ))?
+            .map(|d| d.device_id().to_string());
+
+        // Config client
+        let store_config = StoreConfig::new()
+            .state_store(state_store)
+            .crypto_store(crypto_store);
+
         let client = {
-            let mut home: PathBuf = shellexpand::full(&config.matrix_crypto_store)?
-                .to_string()
-                .try_into()?;
-
-            std::fs::create_dir_all(&home)?; //TODO I don't like creating, .cache if it doesn't exist
-            home.push(&config.username);
-
             let builder = Client::builder()
                 .homeserver_url(config.homeserver.clone())
                 .handle_refresh_tokens()
                 // TODO passphrase
-                .sled_store(home, Some("passphrase"))?;
+                .store_config(store_config);
 
             builder.build().await?
         };
@@ -129,10 +150,7 @@ impl MatrixClient {
             MatrixAuth::Password(password) => client.login_username(&config.username, password),
         };
 
-        // Device
-        if let Some(device) = &config.device {
-            // TODO use this https://github.com/matrix-org/matrix-rust-sdk/commit/945c16a7fbe63ecb142a34d2a6bf2682ec67c86f
-            // to figure out how to get device from the sled automatically
+        if let Some(device) = device.as_ref() {
             login = login.device_id(device);
         }
 
@@ -190,8 +208,8 @@ impl MatrixClient {
         let c = Self {
             client,
             config: config.clone(),
-            message_rx,
-            react_rx,
+            message_rx: message_rx.into(),
+            react_rx: react_rx.into(),
         };
 
         Ok(c)
@@ -526,6 +544,13 @@ impl MatrixClient {
         // this is going to be good ;)
         dbg!(&event);
         dbg!(event.content.relates_to.key);
+
+        let event_id = event.content.relates_to.event_id;
+        let target = room.event(&event_id).await;
+
+        // TODO reprocess target to see if it has a url, so we don't hammer db for no reason
+        // however, implement db to handle reactions to messages it doesn't know about so we can skip them
+        // (also implement db to handle messages with no link)
     }
 }
 
@@ -674,11 +699,12 @@ async fn scan_room_history(room: Room) {
 }
 
 impl traits::ChatService for MatrixClient {
-    fn message_channel(&mut self) -> &mut <MessageChannel as Channel>::Receiver {
-        &mut self.message_rx
+    fn message_channel(&mut self) -> <MessageChannel as Channel>::Receiver {
+        // XXX this is not so great and should perhaps be rewritten either with Result<Reciever> or more likely with some kind of RefCell
+        std::mem::take(&mut self.message_rx).unwrap()
     }
 
-    fn react_channel(&mut self) -> &mut <ReactChannel as Channel>::Receiver {
-        &mut self.react_rx
+    fn react_channel(&mut self) -> <ReactChannel as Channel>::Receiver {
+        std::mem::take(&mut self.react_rx).unwrap()
     }
 }

@@ -1,5 +1,3 @@
-#![feature(let_else)]
-
 ///
 ///  This is an example showcasing how to build a very simple bot using the
 /// matrix-sdk. To try it, you need a rust build setup, then you can run:
@@ -113,6 +111,7 @@ async fn login(homeserver_url: String, username: &str, password: &str) -> eyre::
         .build()
         .await?;
 
+    return Ok(());
     let login = client
         .login_username(username, password)
         .initial_device_display_name("rust-sdk");
@@ -145,7 +144,7 @@ async fn login(homeserver_url: String, username: &str, password: &str) -> eyre::
     client.add_event_handler(on_room_message);
 
     tokio::spawn(bootstrap(
-        (*client).clone(),
+        client.clone(),
         (*user_id).clone(),
         password.to_owned(),
     ));

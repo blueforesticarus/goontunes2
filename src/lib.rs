@@ -1,5 +1,6 @@
 #![feature(async_closure)]
 #![feature(associated_type_defaults)]
+#![feature(min_specialization)]
 
 use serde::{Deserialize, Serialize};
 use service::matrix::MatrixConfig;
