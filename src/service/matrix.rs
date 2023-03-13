@@ -1,5 +1,6 @@
 use crate::{
     traits::{MessageChannel, ReactChannel},
+    types::Reaction,
     utils::{
         channel::Channel,
         links::{extract_urls, parse_url},
@@ -7,16 +8,18 @@ use crate::{
     },
 };
 use chrono::{DateTime, Utc};
+use postage::sink::Sink;
 use serde::{Deserialize, Serialize};
 use std::{
     default, fmt::Display, io::Write, ops::DerefMut, path::PathBuf, str::FromStr, sync::Arc,
 };
 
 use clap::{Parser, Subcommand};
-use eyre::{Context, Result};
-use futures::{lock::Mutex, pin_mut, stream::StreamExt, Sink};
+use eyre::{bail, Context, Result};
+use futures::{lock::Mutex, pin_mut, stream::StreamExt};
 use matrix_sdk::{
     config::{StoreConfig, SyncSettings},
+    deserialized_responses::SyncTimelineEvent,
     encryption::verification::{format_emojis, Emoji, SasVerification, Verification},
     event_handler::Ctx,
     room::{Joined, MessagesOptions, Room},
@@ -564,17 +567,49 @@ impl MatrixClient {
     }
 
     /// Process a (possibly new, possibly old) emoji react
-    async fn process_reaction(&self, event: OriginalSyncReactionEvent, room: Room) {
-        // this is going to be good ;)
-        dbg!(&event);
-        dbg!(event.content.relates_to.key);
-
-        let event_id = event.content.relates_to.event_id;
-        let target = room.event(&event_id).await;
-
+    async fn process_reaction(&self, event: OriginalSyncReactionEvent, room: Room) -> Result<bool> {
         // TODO reprocess target to see if it has a url, so we don't hammer db for no reason
         // however, implement db to handle reactions to messages it doesn't know about so we can skip them
         // (also implement db to handle messages with no link)
+        let event_id = event.content.relates_to.event_id;
+
+        let data = Reaction {
+            sender: types::SenderId {
+                service: ChatService::Matrix,
+                id: event.sender.to_string(),
+            },
+            target: types::MessageId(event_id.to_string()),
+            date: event
+                .origin_server_ts
+                .to_system_time()
+                .ok_or_else(|| eyre::eyre!("weird date {:?}", event.origin_server_ts))?
+                .into(),
+            id: types::MessageId(event_id.to_string()),
+            txt: vec![event.content.relates_to.key],
+        };
+
+        let t = room.event(&event_id).await?;
+        let t: AnySyncTimelineEvent = t.event.deserialize()?.into();
+        let AnySyncTimelineEvent::MessageLike(
+            AnySyncMessageLikeEvent::RoomMessage(t)
+        ) = t else { panic!("{:?}", t) };
+
+        match t {
+            SyncMessageLikeEvent::Original(t) => {
+                if self.process_message(t, room).await? {
+                    let mut guard = self.react_tx.lock().await;
+                    dbg!(&data);
+
+                    guard.send(data).await;
+                    return Ok(true);
+                }
+            }
+            SyncMessageLikeEvent::Redacted(t) => {
+                dbg!(t);
+            }
+        };
+
+        Ok(false)
     }
 
     /// Process a (possibly new, possibly old) message
@@ -582,24 +617,41 @@ impl MatrixClient {
         &self,
         event: OriginalSyncRoomMessageEvent,
         room: Room, /*TODO, should this really take room? */
-    ) {
+    ) -> Result<bool> {
         let links = extract_urls(event.content.body().to_owned());
+        let links: Vec<types::Link> = links
+            .into_iter()
+            .filter_map(|url| match parse_url(url.clone()) {
+                Some(link) => Some(link),
+                None => {
+                    //TODO, emit bad links to a bad link debug table (maybe do with tracing)
+                    None
+                }
+            })
+            .collect();
+
         if !links.is_empty() {
-            let print: Vec<String> = links
-                .iter()
-                .map(|url| match parse_url(url.clone()) {
-                    Some(link) => format!(
-                        "{}:{}:{}",
-                        link.service,
-                        link.kind.map_or_else(|| "".to_string(), |v| v.to_string()),
-                        link.id
-                    ),
-                    None => url.to_string(),
-                })
-                .collect();
-            if !print.is_empty() {
-                //println!("{} {} {:#?}", datetime, event.sender(), print);
-            }
+            let data = types::Message {
+                id: types::MessageId(event.event_id.to_string()),
+                channel: types::ChannelId {
+                    service: ChatService::Matrix,
+                    id: room.room_id().to_string(),
+                },
+                sender: types::SenderId {
+                    service: ChatService::Matrix,
+                    id: event.sender.to_string(),
+                },
+                date: event
+                    .origin_server_ts
+                    .to_system_time()
+                    .ok_or_else(|| eyre::eyre!("weird date {:?}", event.origin_server_ts))?
+                    .into(),
+                links,
+            };
+
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 

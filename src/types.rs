@@ -134,9 +134,6 @@ pub enum Kind {
 pub struct ChannelId {
     pub service: ChatService,
 
-    /// use for discord server group
-    pub group: Option<String>,
-
     pub id: String,
 }
 
@@ -165,7 +162,6 @@ pub struct Message {
     #[serde_as(as = "SurrealAsLink")]
     pub sender: SenderId,
     pub date: DateTime<Utc>,
-    pub text: Option<String>,
     pub links: Vec<Link>,
 }
 impl SurrealTable for Message {
