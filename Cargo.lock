@@ -1543,6 +1543,7 @@ dependencies = [
  "linkify",
  "matrix-sdk",
  "matrix-sdk-crypto",
+ "parking_lot 0.12.1",
  "postage",
  "regex",
  "rspotify",
@@ -1560,6 +1561,7 @@ dependencies = [
  "twilight-http",
  "twilight-model",
  "url",
+ "uuid 1.3.0",
 ]
 
 [[package]]

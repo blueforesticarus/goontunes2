@@ -3,22 +3,23 @@ use crate::{
     utils::{
         channel::Channel,
         links::{extract_urls, parse_url},
+        takecell::TakeCell,
     },
 };
-use matrix_sdk_crypto::ReadOnlyAccount;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
     default, fmt::Display, io::Write, ops::DerefMut, path::PathBuf, str::FromStr, sync::Arc,
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use eyre::{Context, Result};
 use futures::{lock::Mutex, pin_mut, stream::StreamExt, Sink};
 use matrix_sdk::{
     config::{StoreConfig, SyncSettings},
     encryption::verification::{format_emojis, Emoji, SasVerification, Verification},
     event_handler::Ctx,
-    room::{MessagesOptions, Room},
+    room::{Joined, MessagesOptions, Room},
     ruma::{
         api::client::{
             device::get_device::v3::Response,
@@ -40,8 +41,8 @@ use matrix_sdk::{
                 member::StrippedRoomMemberEvent,
                 message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
             },
-            AnySyncMessageLikeEvent, AnySyncTimelineEvent, AnyTimelineEvent, StateEventType,
-            SyncMessageLikeEvent,
+            AnySyncMessageLikeEvent, AnySyncTimelineEvent, AnyTimelineEvent,
+            RoomAccountDataEventType, StateEventType, SyncMessageLikeEvent,
         },
         serde::Raw,
         OwnedRoomId, OwnedUserId, RoomId, UserId,
@@ -95,15 +96,32 @@ pub enum MatrixAuth {
     Password(String), // TODO more auth methods
 }
 
+#[derive(Debug, Clone, Parser)]
+pub enum MatrixCommands {
+    Ping,
+    Scan {
+        #[arg(short, long)]
+        all: bool,
+
+        channel: Option<OwnedRoomId>,
+    },
+    History {
+        channel: Option<OwnedRoomId>,
+    },
+}
+
 pub struct MatrixClient {
     client: Client,
     config: MatrixConfig,
-    message_rx: Option<<MessageChannel as Channel>::Receiver>,
-    react_rx: Option<<ReactChannel as Channel>::Receiver>,
+    message_rx: TakeCell<<MessageChannel as Channel>::Receiver>,
+    react_rx: TakeCell<<ReactChannel as Channel>::Receiver>,
+
+    message_tx: tokio::sync::Mutex<<MessageChannel as Channel>::Sender>,
+    react_tx: tokio::sync::Mutex<<ReactChannel as Channel>::Sender>,
 }
 
 impl MatrixClient {
-    pub async fn connect(config: MatrixConfig) -> Result<MatrixClient> {
+    pub async fn connect(config: MatrixConfig) -> Result<Arc<Self>> {
         // Create crypto store
         let mut home: PathBuf = shellexpand::full(&config.matrix_crypto_store)?
             .to_string()
@@ -171,46 +189,41 @@ impl MatrixClient {
             .await?;
         dbg!(response.device_id);
 
+        // Wrapper Client
+        let (message_tx, message_rx) = MessageChannel::new();
+        let (react_tx, react_rx) = ReactChannel::new();
+
+        let c = Arc::new(Self {
+            client,
+            config: config.clone(),
+            message_rx: message_rx.into(),
+            react_rx: react_rx.into(),
+
+            message_tx: message_tx.into(),
+            react_tx: react_tx.into(),
+        });
+        c.client.add_event_handler_context(c.clone());
+
         // handlers
-        Self::install_verification_handlers(&client);
-        Self::install_autojoin_handlers(&client);
+        Self::install_verification_handlers(&c.client);
+        Self::install_autojoin_handlers(&c.client);
 
         // An initial sync to set up state and so our bot doesn't respond to old
         // messages. If the `StateStore` finds saved state in the location given the
         // initial sync will be skipped in favor of loading state from the store
-        let sync_token = client
+        let sync_token = c
+            .client
             .sync_once(SyncSettings::default())
             .await
             .unwrap()
             .next_batch;
 
         // Method 1
-        let (tx, message_rx) = MessageChannel::new();
-        client.add_event_handler_context(tx);
-        client.add_event_handler(
-            |event: OriginalSyncRoomMessageEvent,
-             room: Room,
-             channel: Ctx<<MessageChannel as Channel>::Sender>| {
-                Self::on_room_message(event, room, channel.0)
-            },
-        );
-
-        // Method 2
-        let (tx, react_rx) = ReactChannel::new();
-        client.add_event_handler(move |event: OriginalSyncReactionEvent, room: Room| {
-            let mut tx = tx.clone();
-            async move { Self::on_reaction(event, room, &mut tx).await }
-        });
+        c.client.add_event_handler(Self::on_room_message);
+        c.client.add_event_handler(Self::on_reaction);
 
         let settings = SyncSettings::default().token(sync_token);
-        client.sync(settings).await?;
-
-        let c = Self {
-            client,
-            config: config.clone(),
-            message_rx: message_rx.into(),
-            react_rx: react_rx.into(),
-        };
+        c.client.sync(settings).await?;
 
         Ok(c)
     }
@@ -441,93 +454,60 @@ impl MatrixClient {
         client.add_event_handler(on_stripped_state_member);
     }
 
+    /// Realtime handler for messages
     async fn on_room_message(
         event: OriginalSyncRoomMessageEvent,
         room: Room,
-        channel: impl postage::sink::Sink<Item = types::Message>,
+        client: Ctx<Arc<MatrixClient>>,
     ) {
         // First, we need to unpack the message: We only want messages from rooms we are
         // still in and that are regular text messages - ignoring everything else.
         dbg!(&event.content.msgtype);
         let Room::Joined(joined) = room else { return };
-        match event.content.msgtype {
-            MessageType::Text(text_content) => {
-                // here comes the actual "logic": when the bot see's a `!party` in the message,
-                // it responds
-                let parts: Vec<String> = text_content
-                    .body
-                    .split_whitespace()
-                    .map(|a| a.to_string())
-                    .collect();
-                let command = parts.get(0).map(String::as_str).unwrap_or("");
-                let room_to_scan = if let Some(roomid) = parts.get(1) {
-                    let roomid = match OwnedRoomId::from_str(roomid) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return;
+        match &event.content.msgtype {
+            MessageType::Text(content) => {
+                let content = content.body.trim();
+
+                let username = joined
+                    .client()
+                    .account()
+                    .get_display_name()
+                    .await
+                    .unwrap()
+                    .unwrap();
+
+                dbg!(&username);
+
+                let cmd = content
+                    .strip_prefix(format!("{}: ", username).as_str())
+                    .or(content.strip_prefix('!'));
+
+                //TODO respond to @ messages
+
+                if let Some(content) = cmd {
+                    // Use command handler
+                    let mut cmd_txt: Vec<String> = content
+                        .trim_start_matches('!') // permit @bot !command
+                        .trim()
+                        .split_ascii_whitespace()
+                        .into_iter()
+                        .map(ToString::to_string)
+                        .collect();
+                    cmd_txt.insert(0, "!".into());
+
+                    let command = MatrixCommands::try_parse_from(cmd_txt);
+                    match command {
+                        Ok(command) => {
+                            client.process_commands(command, joined).await;
                         }
-                    };
-                    match joined.clone().client().get_room(&roomid) {
-                        Some(r) => r,
-                        None => {
-                            dbg!("room does not exist", roomid);
-                            return;
+                        Err(e) => {
+                            let msg = RoomMessageEventContent::text_plain(e.render().to_string());
+                            joined.send(msg, None).await.unwrap();
                         }
                     }
                 } else {
-                    joined.clone().into()
-                };
-
-                match command {
-                    "!party" => {
-                        let content =
-                            RoomMessageEventContent::text_plain("🎉🎊🥳 let's PARTY!! 🥳🎊🎉");
-                        println!("sending");
-                        // send our message to the room we found the "!party" command in
-                        // the last parameter is an optional transaction id which we don't
-                        // care about.
-                        joined.send(content, None).await.unwrap();
-                        println!("message sent");
-                    }
-                    "!scan" => {
-                        scan_room_history(room_to_scan).await;
-                    }
-                    "!scan_all" => {
-                        let ancestry = RoomAncestry::get(room_to_scan).await;
-                        for room_to_scan in
-                            ancestry.lineage.into_iter().filter_map(Result::ok).rev()
-                        {
-                            scan_room_history(room_to_scan).await;
-                        }
-                    }
-                    "!history" => {
-                        let ancestry = RoomAncestry::get(room_to_scan).await;
-                        let msg: Vec<String> = ancestry
-                            .lineage
-                            .iter()
-                            .enumerate()
-                            .map(|(i, v)| match v {
-                                Ok(room) => {
-                                    if i != ancestry.offset {
-                                        format!("- {}", room.room_id())
-                                    } else {
-                                        format!("- **{}**", room.room_id())
-                                    }
-                                }
-                                Err(roomid) => {
-                                    let txt = format!("- {} inaccessible", roomid);
-                                    match i {
-                                        0 => format!("- ...\n- {}", txt),
-                                        _ => format!("- {}\n- ...", txt),
-                                    }
-                                }
-                            })
-                            .collect();
-                        let msg = msg.join("\n");
-                        let content = RoomMessageEventContent::text_markdown(msg);
-                        joined.send(content, None).await.unwrap();
-                    }
-                    _ => {}
+                    // use regular message handler
+                    client.process_message(event, joined.into()).await;
                 }
             }
             other => {
@@ -536,11 +516,55 @@ impl MatrixClient {
         }
     }
 
+    /// Realtime handler for emoji reacts
     async fn on_reaction(
         event: OriginalSyncReactionEvent,
         room: Room,
-        channel: &mut impl postage::sink::Sink<Item = types::Reaction>,
+        client: Ctx<Arc<MatrixClient>>,
     ) {
+        client.process_reaction(event, room);
+    }
+
+    /// Implements !commands
+    async fn process_commands(&self, command: MatrixCommands, room: Joined) {
+        //TODO, abstract beyond just matrix commands, allow cli as well
+        let get_room = |channel: Option<OwnedRoomId>| match channel {
+            Some(room_id) => self.client.get_room(&room_id),
+            None => Some(room.clone().into()),
+        };
+
+        match command {
+            MatrixCommands::Ping => {
+                let content = RoomMessageEventContent::text_plain("pong");
+                //Note: the last parameter is an optional transaction id
+                room.send(content, None).await.unwrap(); //XXX
+            }
+            MatrixCommands::Scan { all, channel } => {
+                let target: Room = get_room(channel).unwrap();
+                //TODO handle non-existant room
+                if all {
+                    let ancestry = RoomAncestry::get(target).await;
+                    for target in ancestry.lineage.into_iter().filter_map(Result::ok).rev() {
+                        scan_room_history(target).await;
+                    }
+                } else {
+                    dbg!(&target);
+                    scan_room_history(target).await;
+                }
+
+                //TODO
+            }
+            MatrixCommands::History { channel } => {
+                let target: Room = get_room(channel).unwrap();
+                let history = RoomAncestry::get(target).await;
+                let content = RoomMessageEventContent::text_markdown(history.to_string());
+                room.send(content, None).await.unwrap();
+            }
+        }
+    }
+
+    /// Process a (possibly new, possibly old) emoji react
+    async fn process_reaction(&self, event: OriginalSyncReactionEvent, room: Room) {
         // this is going to be good ;)
         dbg!(&event);
         dbg!(event.content.relates_to.key);
@@ -552,6 +576,46 @@ impl MatrixClient {
         // however, implement db to handle reactions to messages it doesn't know about so we can skip them
         // (also implement db to handle messages with no link)
     }
+
+    /// Process a (possibly new, possibly old) message
+    async fn process_message(
+        &self,
+        event: OriginalSyncRoomMessageEvent,
+        room: Room, /*TODO, should this really take room? */
+    ) {
+        let links = extract_urls(event.content.body().to_owned());
+        if !links.is_empty() {
+            let print: Vec<String> = links
+                .iter()
+                .map(|url| match parse_url(url.clone()) {
+                    Some(link) => format!(
+                        "{}:{}:{}",
+                        link.service,
+                        link.kind.map_or_else(|| "".to_string(), |v| v.to_string()),
+                        link.id
+                    ),
+                    None => url.to_string(),
+                })
+                .collect();
+            if !print.is_empty() {
+                //println!("{} {} {:#?}", datetime, event.sender(), print);
+            }
+        }
+    }
+
+    //TODO make trait
+    fn scan_room_history(&self, since: DateTime<Utc>) {}
+}
+
+impl traits::ChatService for MatrixClient {
+    fn message_channel(&self) -> <MessageChannel as Channel>::Receiver {
+        // XXX this is not so great and should perhaps be rewritten either with Result<Reciever> or more likely with some kind of RefCell
+        self.message_rx.take().unwrap()
+    }
+
+    fn react_channel(&self) -> <ReactChannel as Channel>::Receiver {
+        self.react_rx.take().unwrap()
+    }
 }
 
 /// Used to get older (and newer) versions of the room
@@ -559,6 +623,35 @@ impl MatrixClient {
 pub struct RoomAncestry {
     pub lineage: Vec<Result<Room, OwnedRoomId>>,
     pub offset: usize,
+}
+
+impl Display for RoomAncestry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg: Vec<String> = self
+            .lineage
+            .iter()
+            .enumerate()
+            .map(|(i, v)| match v {
+                Ok(room) => {
+                    if i != self.offset {
+                        format!("- {}", room.room_id())
+                    } else {
+                        format!("- **{}**", room.room_id())
+                    }
+                }
+                Err(roomid) => {
+                    let txt = format!("- {} inaccessible", roomid);
+                    match i {
+                        0 => format!("- ...\n- {}", txt),
+                        _ => format!("- {}\n- ...", txt),
+                    }
+                }
+            })
+            .collect();
+        let msg = msg.join("\n");
+        f.write_str(&msg);
+        Ok(())
+    }
 }
 
 impl RoomAncestry {
@@ -695,16 +788,5 @@ async fn scan_room_history(room: Room) {
                 }
             }
         }
-    }
-}
-
-impl traits::ChatService for MatrixClient {
-    fn message_channel(&mut self) -> <MessageChannel as Channel>::Receiver {
-        // XXX this is not so great and should perhaps be rewritten either with Result<Reciever> or more likely with some kind of RefCell
-        std::mem::take(&mut self.message_rx).unwrap()
-    }
-
-    fn react_channel(&mut self) -> <ReactChannel as Channel>::Receiver {
-        std::mem::take(&mut self.react_rx).unwrap()
     }
 }

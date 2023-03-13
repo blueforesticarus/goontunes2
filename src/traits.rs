@@ -8,8 +8,8 @@ pub type ReactChannel = Mpsc<Reaction, 100>;
 pub trait ChatService {
     // Note: weirdness with ambiguous type
     // Note cannot return &mut of Receiver because then you couldn't poll simultaneously (can't have 2 &mut self)
-    fn message_channel(&mut self) -> <MessageChannel as Channel>::Receiver;
-    fn react_channel(&mut self) -> <ReactChannel as Channel>::Receiver;
+    fn message_channel(&self) -> <MessageChannel as Channel>::Receiver;
+    fn react_channel(&self) -> <ReactChannel as Channel>::Receiver;
 
     //fn rescan_since();
 }
