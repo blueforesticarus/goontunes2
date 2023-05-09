@@ -31,14 +31,14 @@ matrix-sdk = { version = "0.6.2", features = ["eyre", "e2e-encryption", "sled", 
 rspotify = { version = "0.11.5", features = ["cli"] }
 
 # discord support
-twilight-cache-inmemory = "0.14.0"
-twilight-gateway = "0.14.0"
-twilight-http = "0.14.0"
-twilight-model = "0.14.0"
+twilight-cache-inmemory = "0.15.1"
+twilight-gateway = "0.15.1"
+twilight-http = "0.15.1"
+twilight-model = "0.15.1"
 serenity = {version = "0.11.5", default-features = false, features = ["client", "gateway", "rustls_backend", "model"] } # disable default `framework` feature
 
 # database support
-surrealdb = {version = "1.0.0-beta.8", features = ["kv-rocksdb", "kv-mem"]}
+surrealdb = {version = "1.0.0-beta.9", features = ["kv-rocksdb", "kv-mem"]}
 serde_with = "2.2.0"
 async-trait = "0.1.64"
 shellexpand = { version = "3.0.0", features = ["path"] }

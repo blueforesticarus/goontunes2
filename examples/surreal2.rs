@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use surrealdb::{
-    opt::{from_json, IntoQuery},
-    sql::{Array, Datetime, Id, Object, Table, Thing, Value},
+    opt::{IntoQuery},
+    sql::{Table, Value},
 };
 use url::Url;
 

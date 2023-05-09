@@ -10,26 +10,17 @@ use crate::{
 use chrono::{DateTime, Utc};
 use postage::sink::Sink;
 use serde::{Deserialize, Serialize};
-use std::{
-    default, fmt::Display, io::Write, ops::DerefMut, path::PathBuf, str::FromStr, sync::Arc,
-};
+use std::{fmt::Display, io::Write, path::PathBuf, sync::Arc};
 
-use clap::{Parser, Subcommand};
-use eyre::{bail, Context, Result};
-use futures::{lock::Mutex, pin_mut, stream::StreamExt};
+use clap::Parser;
+use eyre::{Context, Result};
+use futures::{pin_mut, stream::StreamExt};
 use matrix_sdk::{
     config::{StoreConfig, SyncSettings},
-    deserialized_responses::SyncTimelineEvent,
-    encryption::verification::{format_emojis, Emoji, SasVerification, Verification},
+    encryption::verification::{format_emojis, SasVerification, Verification},
     event_handler::Ctx,
     room::{Joined, MessagesOptions, Room},
     ruma::{
-        api::client::{
-            device::get_device::v3::Response,
-            filter::RoomEventFilter,
-            filter::{FilterDefinition, LazyLoadOptions},
-            message::get_message_events::v3::Direction,
-        },
         events::{
             key::verification::{
                 done::{OriginalSyncKeyVerificationDoneEvent, ToDeviceKeyVerificationDoneEvent},
@@ -37,21 +28,19 @@ use matrix_sdk::{
                 request::ToDeviceKeyVerificationRequestEvent,
                 start::{OriginalSyncKeyVerificationStartEvent, ToDeviceKeyVerificationStartEvent},
             },
-            reaction::{OriginalSyncReactionEvent, SyncReactionEvent},
+            reaction::OriginalSyncReactionEvent,
             room::{
-                self,
-                create::{RoomCreateEvent, SyncRoomCreateEvent},
+                create::SyncRoomCreateEvent,
                 member::StrippedRoomMemberEvent,
                 message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
             },
-            AnySyncMessageLikeEvent, AnySyncTimelineEvent, AnyTimelineEvent,
-            RoomAccountDataEventType, StateEventType, SyncMessageLikeEvent,
+            AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
         },
         serde::Raw,
-        OwnedRoomId, OwnedUserId, RoomId, UserId,
+        OwnedRoomId, UserId,
     },
     store::SledStateStore,
-    Client, LoopCtrl, StoreError,
+    Client,
 };
 
 use tokio::time::{sleep, Duration};
@@ -76,6 +65,8 @@ pub struct MatrixConfig {
     /// TODO this needs to default to some kind of .cache/goontunes dir
     #[serde(default = "default_sled_path")]
     pub matrix_crypto_store: String,
+    // Channels to listen to
+    //pub channels: Vec<String>,
 }
 
 impl MatrixConfig {
@@ -231,7 +222,7 @@ impl MatrixClient {
         Ok(c)
     }
 
-    fn install_verification_handlers(client: &Client) {
+    fn install_verification_handlers(client: &Clie`nt) {
         fn print_result(sas: &SasVerification) {
             let device = sas.other_device();
 
@@ -510,7 +501,7 @@ impl MatrixClient {
                     }
                 } else {
                     // use regular message handler
-                    client.process_message(event, joined.into()).await;
+                    client.process_message(event, joined.into()).await.unwrap();
                 }
             }
             other => {
@@ -525,7 +516,7 @@ impl MatrixClient {
         room: Room,
         client: Ctx<Arc<MatrixClient>>,
     ) {
-        client.process_reaction(event, room);
+        client.process_reaction(event, room).await.unwrap();
     }
 
     /// Implements !commands
@@ -598,9 +589,7 @@ impl MatrixClient {
             SyncMessageLikeEvent::Original(t) => {
                 if self.process_message(t, room).await? {
                     let mut guard = self.react_tx.lock().await;
-                    dbg!(&data);
-
-                    guard.send(data).await;
+                    guard.send(data).await?;
                     return Ok(true);
                 }
             }
@@ -625,6 +614,7 @@ impl MatrixClient {
                 Some(link) => Some(link),
                 None => {
                     //TODO, emit bad links to a bad link debug table (maybe do with tracing)
+                    dbg!(url);
                     None
                 }
             })
@@ -649,6 +639,9 @@ impl MatrixClient {
                 links,
             };
 
+            let mut guard = self.message_tx.lock().await;
+            guard.send(data).await?;
+
             Ok(true)
         } else {
             Ok(false)
@@ -656,7 +649,7 @@ impl MatrixClient {
     }
 
     //TODO make trait
-    fn scan_room_history(&self, since: DateTime<Utc>) {}
+    fn scan_room_history(&self, _since: DateTime<Utc>) {}
 }
 
 impl traits::ChatService for MatrixClient {
@@ -701,7 +694,7 @@ impl Display for RoomAncestry {
             })
             .collect();
         let msg = msg.join("\n");
-        f.write_str(&msg);
+        f.write_str(&msg).expect("when does this error?");
         Ok(())
     }
 }
@@ -773,7 +766,7 @@ async fn scan_room_history(room: Room) {
                 AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(event)) => {
                     Some(event.content.msgtype.body().to_owned())
                 }
-                AnySyncMessageLikeEvent::Reaction(SyncMessageLikeEvent::Original(event)) => {
+                AnySyncMessageLikeEvent::Reaction(SyncMessageLikeEvent::Original(_event)) => {
                     //dbg!(event);
                     None
                 }
@@ -817,9 +810,7 @@ async fn scan_room_history(room: Room) {
             // not helpfull, only includes emoji and not username of sender
         }
 
-        use chrono::offset::Utc;
-        use chrono::DateTime;
-        let datetime: DateTime<Utc> = event.origin_server_ts().to_system_time().unwrap().into();
+        let _datetime: DateTime<Utc> = event.origin_server_ts().to_system_time().unwrap().into();
         if let Some(content) = event_content(event.clone()) {
             let links = extract_urls(content);
             if !links.is_empty() {

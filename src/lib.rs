@@ -1,10 +1,7 @@
 #![feature(async_closure)]
 #![feature(associated_type_defaults)]
 #![feature(min_specialization)]
-
-use serde::{Deserialize, Serialize};
-use service::matrix::MatrixConfig;
-use std::fs::File;
+//#![allow(dead_code)]
 
 pub mod config;
 pub mod database;
@@ -18,6 +15,7 @@ pub mod utils {
     pub mod takecell;
 }
 pub mod service {
+    //pub mod discord;
     pub mod matrix;
     pub mod spotify;
     pub mod youtube;

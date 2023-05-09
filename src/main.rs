@@ -1,7 +1,7 @@
-use std::{io::stderr, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use eyre::{bail, Context, ContextCompat, Result};
+use eyre::{bail, Context, Result};
 use goontunes::{config::Config, service::matrix::MatrixClient, traits::ChatService};
 use postage::stream::Stream;
 
@@ -86,7 +86,7 @@ async fn init(config: Config) -> Result<()> {
     for service_config in config.services.iter() {
         match service_config {
             goontunes::config::ServiceConfig::Matrix(c) => {
-                let mut client = MatrixClient::connect(c.clone()).await?;
+                let client = MatrixClient::connect(c.clone()).await?;
 
                 let mut mrx = client.message_channel();
                 let mut rrx = client.react_channel();

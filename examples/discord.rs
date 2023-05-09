@@ -1,9 +1,7 @@
-use std::env;
-
-use env_logger::builder;
 use serenity::async_trait;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
+use serenity::model::prelude::Reaction;
 use serenity::prelude::*;
 
 struct Handler;
@@ -27,13 +25,17 @@ impl EventHandler for Handler {
         }
     }
 
+    async fn reaction_add(&self, ctx: Context, add_reaction: Reaction) {
+        dbg!(add_reaction);
+    }
+
     // Set a handler to be called on the `ready` event. This is called when a
     // shard is booted, and a READY payload is sent by Discord. This payload
     // contains data like the current user's guild Ids, current user data,
     // private channels, and more.
     //
     // In this case, just print what the current user's username is.
-    async fn ready(&self, c: Context, ready: Ready) {
+    async fn ready(&self, _c: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
     }
 }

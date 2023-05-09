@@ -3,7 +3,7 @@ use rspotify::{
 };
 
 use futures::StreamExt;
-use futures::TryStreamExt;
+
 
 #[tokio::main]
 async fn main() {

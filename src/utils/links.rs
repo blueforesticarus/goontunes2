@@ -1,6 +1,6 @@
 use linkify::{LinkFinder, LinkKind};
 use regex::Regex;
-use strum::{Display, EnumString};
+
 use url::Url;
 
 use crate::types::{Link, MusicService};
@@ -74,7 +74,7 @@ pub fn parse_url(url: Url) -> Option<Link> {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::links::{extract_urls, parse_url, Link};
+    use crate::utils::links::{extract_urls, parse_url};
 
     #[test]
     fn url_extract() {

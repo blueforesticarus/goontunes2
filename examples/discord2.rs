@@ -1,9 +1,16 @@
 use futures::stream::StreamExt;
-use std::{env, error::Error, sync::Arc};
+use std::{error::Error, sync::Arc};
 use twilight_cache_inmemory::{InMemoryCache, ResourceType};
-use twilight_gateway::{Cluster, Event};
+use twilight_gateway::{Event, Shard};
 use twilight_http::Client as HttpClient;
 use twilight_model::gateway::Intents;
+
+struct Client {
+    cache: InMemoryCache,
+    shard: Shard,
+
+    http: HttpClient,
+}
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -43,11 +50,7 @@ async fn main() -> eyre::Result<()> {
         .unwrap();
     dbg!(guilds);
 
-    // Since we only care about new messages, make the cache only
-    // cache new messages.
-    let cache = InMemoryCache::builder()
-        .resource_types(ResourceType::MESSAGE)
-        .build();
+    let cache = InMemoryCache::builder().message_cache_size(10000).build();
 
     // Process each event as they come in.
     while let Some((shard_id, event)) = events.next().await {
