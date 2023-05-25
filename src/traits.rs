@@ -1,17 +1,23 @@
-use crate::types::{Message, Reaction};
+use chrono::{DateTime, TimeZone, Utc};
+
+use crate::types::{Collection, CollectionId, Message, Reaction, Sender, Track, TrackMetaData};
 use crate::utils::channel::{Channel, Mpsc};
 //XXX: What is the correct way to define this. I still don't know
 
-pub type MessageChannel = Mpsc<Message, 100>;
-pub type ReactChannel = Mpsc<Reaction, 100>;
+#[derive(Debug, Clone, derive_more::From)]
+pub enum ChatEvent {
+    Message(Message),
+    Reaction(Reaction),
+}
+pub type ChatChannel = Mpsc<ChatEvent, 100>;
 
+#[async_trait::async_trait]
 pub trait ChatService {
     // Note: weirdness with ambiguous type
     // Note cannot return &mut of Receiver because then you couldn't poll simultaneously (can't have 2 &mut self)
-    fn message_channel(&self) -> <MessageChannel as Channel>::Receiver;
-    fn react_channel(&self) -> <ReactChannel as Channel>::Receiver;
-
-    //fn rescan_since();
+    fn channel(&self) -> <ChatChannel as Channel>::Receiver;
+    async fn rescan(&self, since: DateTime<Utc>);
+    async fn get_user_info(&self, user_id: String) -> eyre::Result<Option<Sender>>;
 }
 
 #[async_trait::async_trait]
@@ -26,4 +32,19 @@ pub trait PlaylistService {
     async fn create_playlist(string) string
     async fn list_playlists() []Collection
     */
+
+    //async fn fetch_playlist(id: String) -> Collection;
+    //async fn fetch_metadata() -> TrackMetaData;
+    async fn get_tracks(&self, id: CollectionId) -> eyre::Result<Collection<Track>>;
+}
+
+/// A trait that defines a *stable* example value, to be used in tests, help messages, and example config generation.
+pub trait Example {
+    fn example() -> Self;
+}
+
+impl Example for DateTime<Utc> {
+    fn example() -> Self {
+        Utc.with_ymd_and_hms(2014, 7, 8, 9, 10, 11).unwrap() // `2014-07-08T09:10:11Z`
+    }
 }

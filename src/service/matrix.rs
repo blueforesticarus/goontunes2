@@ -1,20 +1,26 @@
 use crate::{
-    traits::{MessageChannel, ReactChannel},
-    types::Reaction,
+    traits::{ChatChannel, ChatEvent},
+    types::{Reaction, Sender, SenderId},
     utils::{
         channel::Channel,
         links::{extract_urls, parse_url},
         takecell::TakeCell,
+        when_even::{Ignoreable, Loggable, OnError},
     },
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use postage::sink::Sink;
 use serde::{Deserialize, Serialize};
-use std::{fmt::Display, io::Write, path::PathBuf, sync::Arc};
+use std::{
+    fmt::{format, Display},
+    io::Write,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use clap::Parser;
-use eyre::{Context, Result};
-use futures::{pin_mut, stream::StreamExt};
+use eyre::{bail, Context, ContextCompat, Result};
+use futures::{future::join, pin_mut, stream::StreamExt};
 use matrix_sdk::{
     config::{StoreConfig, SyncSettings},
     encryption::verification::{format_emojis, SasVerification, Verification},
@@ -28,16 +34,17 @@ use matrix_sdk::{
                 request::ToDeviceKeyVerificationRequestEvent,
                 start::{OriginalSyncKeyVerificationStartEvent, ToDeviceKeyVerificationStartEvent},
             },
-            reaction::OriginalSyncReactionEvent,
+            reaction::{OriginalSyncReactionEvent, ReactionEventContent, Relation},
             room::{
-                create::SyncRoomCreateEvent,
+                create::{RoomCreateEventContent, SyncRoomCreateEvent},
                 member::StrippedRoomMemberEvent,
                 message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
             },
-            AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
+            AnyMessageLikeEventContent, AnySyncMessageLikeEvent, AnySyncTimelineEvent,
+            SyncMessageLikeEvent,
         },
         serde::Raw,
-        OwnedRoomId, UserId,
+        EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
     },
     store::SledStateStore,
     Client,
@@ -65,8 +72,9 @@ pub struct MatrixConfig {
     /// TODO this needs to default to some kind of .cache/goontunes dir
     #[serde(default = "default_sled_path")]
     pub matrix_crypto_store: String,
-    // Channels to listen to
-    //pub channels: Vec<String>,
+
+    // Channels to listen to for tracks
+    pub channels: Option<Vec<OwnedRoomId>>,
 }
 
 impl MatrixConfig {
@@ -76,6 +84,7 @@ impl MatrixConfig {
             username: "<username>".into(),
             auth: MatrixAuth::Password("<password>".into()),
             matrix_crypto_store: default_sled_path(),
+            channels: Some(vec!["!n8f893n9:example.com".try_into().unwrap()]),
         }
     }
 }
@@ -102,16 +111,16 @@ pub enum MatrixCommands {
     History {
         channel: Option<OwnedRoomId>,
     },
+    User {
+        user_id: Option<OwnedUserId>,
+    },
 }
 
 pub struct MatrixClient {
     client: Client,
     config: MatrixConfig,
-    message_rx: TakeCell<<MessageChannel as Channel>::Receiver>,
-    react_rx: TakeCell<<ReactChannel as Channel>::Receiver>,
-
-    message_tx: tokio::sync::Mutex<<MessageChannel as Channel>::Sender>,
-    react_tx: tokio::sync::Mutex<<ReactChannel as Channel>::Sender>,
+    event_rx: TakeCell<<ChatChannel as Channel>::Receiver>,
+    event_tx: tokio::sync::Mutex<<ChatChannel as Channel>::Sender>,
 }
 
 impl MatrixClient {
@@ -184,17 +193,14 @@ impl MatrixClient {
         dbg!(response.device_id);
 
         // Wrapper Client
-        let (message_tx, message_rx) = MessageChannel::new();
-        let (react_tx, react_rx) = ReactChannel::new();
+        let (event_tx, event_rx) = ChatChannel::new();
 
         let c = Arc::new(Self {
             client,
             config: config.clone(),
-            message_rx: message_rx.into(),
-            react_rx: react_rx.into(),
+            event_rx: event_rx.into(),
 
-            message_tx: message_tx.into(),
-            react_tx: react_tx.into(),
+            event_tx: event_tx.into(),
         });
         c.client.add_event_handler_context(c.clone());
 
@@ -217,12 +223,18 @@ impl MatrixClient {
         c.client.add_event_handler(Self::on_reaction);
 
         let settings = SyncSettings::default().token(sync_token);
-        c.client.sync(settings).await?;
+        let c2 = c.clone();
+        tokio::spawn(async move {
+            c2.client
+                .sync(settings)
+                .await
+                .expect("this should run forever");
+        });
 
         Ok(c)
     }
 
-    fn install_verification_handlers(client: &Clie`nt) {
+    fn install_verification_handlers(client: &Client) {
         fn print_result(sas: &SasVerification) {
             let device = sas.other_device();
 
@@ -456,7 +468,6 @@ impl MatrixClient {
     ) {
         // First, we need to unpack the message: We only want messages from rooms we are
         // still in and that are regular text messages - ignoring everything else.
-        dbg!(&event.content.msgtype);
         let Room::Joined(joined) = room else { return };
         match &event.content.msgtype {
             MessageType::Text(content) => {
@@ -469,8 +480,6 @@ impl MatrixClient {
                     .await
                     .unwrap()
                     .unwrap();
-
-                dbg!(&username);
 
                 let cmd = content
                     .strip_prefix(format!("{}: ", username).as_str())
@@ -492,7 +501,7 @@ impl MatrixClient {
                     let command = MatrixCommands::try_parse_from(cmd_txt);
                     match command {
                         Ok(command) => {
-                            client.process_commands(command, joined).await;
+                            client.process_commands(command, joined, event).await;
                         }
                         Err(e) => {
                             let msg = RoomMessageEventContent::text_plain(e.render().to_string());
@@ -519,8 +528,13 @@ impl MatrixClient {
         client.process_reaction(event, room).await.unwrap();
     }
 
-    /// Implements !commands
-    async fn process_commands(&self, command: MatrixCommands, room: Joined) {
+    /// delegate for !commands
+    async fn process_commands(
+        &self,
+        command: MatrixCommands,
+        room: Joined,
+        event: OriginalSyncRoomMessageEvent,
+    ) {
         //TODO, abstract beyond just matrix commands, allow cli as well
         let get_room = |channel: Option<OwnedRoomId>| match channel {
             Some(room_id) => self.client.get_room(&room_id),
@@ -537,20 +551,23 @@ impl MatrixClient {
                 let target: Room = get_room(channel).unwrap();
                 //TODO handle non-existant room
                 if all {
-                    let ancestry = RoomAncestry::get(target).await;
-                    for target in ancestry.lineage.into_iter().filter_map(Result::ok).rev() {
-                        scan_room_history(target).await;
-                    }
+                    self.scan_room_and_ancestors(target, DateTime::<Utc>::MIN_UTC)
+                        .await;
                 } else {
-                    dbg!(&target);
-                    scan_room_history(target).await;
+                    self.scan_room_history(target, DateTime::<Utc>::MIN_UTC)
+                        .await;
                 }
 
                 //TODO
             }
+            MatrixCommands::User { user_id } => {
+                let info = self.user_info(user_id.unwrap_or(event.sender)).await;
+                let content = RoomMessageEventContent::text_plain(format!("{:#?}", info));
+                room.send(content, None).await.unwrap();
+            }
             MatrixCommands::History { channel } => {
                 let target: Room = get_room(channel).unwrap();
-                let history = RoomAncestry::get(target).await;
+                let history = RoomAncestry::get(&target).await;
                 let content = RoomMessageEventContent::text_markdown(history.to_string());
                 room.send(content, None).await.unwrap();
             }
@@ -575,7 +592,7 @@ impl MatrixClient {
                 .to_system_time()
                 .ok_or_else(|| eyre::eyre!("weird date {:?}", event.origin_server_ts))?
                 .into(),
-            id: types::MessageId(event_id.to_string()),
+            id: types::ReactionId(event_id.to_string()),
             txt: vec![event.content.relates_to.key],
         };
 
@@ -583,13 +600,13 @@ impl MatrixClient {
         let t: AnySyncTimelineEvent = t.event.deserialize()?.into();
         let AnySyncTimelineEvent::MessageLike(
             AnySyncMessageLikeEvent::RoomMessage(t)
-        ) = t else { panic!("{:?}", t) };
+        ) = t else { bail!("{:?}", t) };
 
         match t {
             SyncMessageLikeEvent::Original(t) => {
                 if self.process_message(t, room).await? {
-                    let mut guard = self.react_tx.lock().await;
-                    guard.send(data).await?;
+                    let mut guard = self.event_tx.lock().await;
+                    guard.send(data.into()).await?;
                     return Ok(true);
                 }
             }
@@ -607,6 +624,7 @@ impl MatrixClient {
         event: OriginalSyncRoomMessageEvent,
         room: Room, /*TODO, should this really take room? */
     ) -> Result<bool> {
+        //dbg!(&event.content);
         let links = extract_urls(event.content.body().to_owned());
         let links: Vec<types::Link> = links
             .into_iter()
@@ -639,27 +657,195 @@ impl MatrixClient {
                 links,
             };
 
-            let mut guard = self.message_tx.lock().await;
-            guard.send(data).await?;
-
+            let mut guard = self.event_tx.lock().await;
+            guard.send(data.into()).await?;
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    //TODO make trait
-    fn scan_room_history(&self, _since: DateTime<Utc>) {}
-}
+    async fn scan_room_and_ancestors(&self, target: Room, since: DateTime<Utc>) {
+        let ancestry = RoomAncestry::get_try_join(target).await;
+        println!("{}", ancestry);
+        for target in ancestry.lineage.into_iter().filter_map(Result::ok).rev() {
+            self.scan_room_history(target.clone(), since).await;
 
-impl traits::ChatService for MatrixClient {
-    fn message_channel(&self) -> <MessageChannel as Channel>::Receiver {
-        // XXX this is not so great and should perhaps be rewritten either with Result<Reciever> or more likely with some kind of RefCell
-        self.message_rx.take().unwrap()
+            let events = target
+                .get_state_events_static::<RoomCreateEventContent>()
+                .await;
+            let event: eyre::Result<_> = try {
+                events?
+                    .get(0)
+                    .unwrap()
+                    .deserialize()?
+                    .as_original()
+                    .context("idk")?
+                    .clone()
+            };
+            let Ok(event) = event.log::<OnError>() else {continue};
+            let dt: DateTime<Utc> = event.origin_server_ts.to_system_time().unwrap().into();
+            if dt > since {
+                // this room was created after the since date, so previous room was ended before earliest messages we are scanning for
+                break;
+            }
+        }
     }
 
-    fn react_channel(&self) -> <ReactChannel as Channel>::Receiver {
-        self.react_rx.take().unwrap()
+    async fn scan_room_history(&self, target: Room, since: DateTime<Utc>) {
+        println!("scanning {}", target.room_id());
+        let mut opt = MessagesOptions::backward();
+        opt.limit = 100.try_into().unwrap();
+
+        //let s = vec!["*".to_string()];
+        //opt.filter.types = Some(s.as_ref());
+        let backward_stream = target.timeline_backward().await.unwrap();
+        pin_mut!(backward_stream);
+
+        while let Some(event) = backward_stream.next().await {
+            let event = event.unwrap().event.deserialize().unwrap();
+
+            if DateTime::<Utc>::from(event.origin_server_ts().to_system_time().unwrap()) < since {
+                //too early
+                break;
+            }
+
+            //TODO some kind of log
+            if let AnySyncTimelineEvent::MessageLike(event) = event {
+                match event {
+                    AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(event)) => {
+                        self.process_message(event, target.clone())
+                            .await
+                            .log::<OnError>()
+                            .ignore();
+                    }
+                    AnySyncMessageLikeEvent::Reaction(SyncMessageLikeEvent::Original(event)) => {
+                        self.process_reaction(event, target.clone())
+                            .await
+                            .log::<OnError>()
+                            .ignore();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    async fn get_room_try_join(&self, room_id: &RoomId) -> eyre::Result<Joined> {
+        match self.client.get_joined_room(room_id) {
+            Some(room) => Ok(room),
+            None => {
+                self.client
+                    .join_room_by_id(room_id)
+                    .await
+                    .log::<OnError>()
+                    .ignore();
+                self.client
+                    .get_joined_room(room_id)
+                    .ok_or_else(|| eyre::Report::msg(format!("unknown room {room_id}")))
+            }
+        }
+    }
+
+    fn joined_room_ids(&self) -> Vec<OwnedRoomId> {
+        self.client
+            .joined_rooms()
+            .into_iter()
+            .map(|v| v.room_id().into())
+            .collect()
+    }
+
+    async fn user_info(&self, user_id: OwnedUserId) -> Option<Sender> {
+        let id = user_id.to_string();
+        let mut alias: Vec<String> = Vec::new();
+        let mut avatar: Option<Vec<u8>> = None;
+
+        for room in self.client.joined_rooms() {
+            if let Ok(Some(m)) = room.get_member(&user_id).await.log::<OnError>() {
+                if let Some(n) = m.display_name() {
+                    alias.push(n.to_string())
+                }
+
+                alias.push(m.name().to_string());
+                //let avatar_url = m.avatar_url().map(|v| v.as_str().try_into().unwrap());
+                if avatar.is_none() {
+                    avatar = m
+                        .avatar(matrix_sdk::media::MediaFormat::File)
+                        .await
+                        .log::<OnError>()
+                        .unwrap_or(None)
+                }
+
+                //this break result in only geting aliases from at most one channel
+                break;
+            }
+        }
+
+        if alias.is_empty() {
+            None
+        } else {
+            alias.sort();
+            alias.dedup();
+            Some(types::Sender {
+                id: SenderId {
+                    id,
+                    service: ChatService::Matrix,
+                },
+                alias,
+                avatar,
+            })
+        }
+    }
+
+    async fn joined(&self, room_id: &RoomId) -> Result<Joined> {
+        self.client
+            .get_joined_room(room_id)
+            .wrap_err_with(|| format!("no joined room {}", room_id))
+    }
+
+    async fn read_receipt(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
+        self.joined(room_id).await?.read_receipt(event_id).await?;
+        Ok(())
+    }
+
+    async fn typing(&self, room_id: &RoomId, on: bool) -> Result<()> {
+        self.joined(room_id).await?.typing_notice(on).await?;
+        Ok(())
+    }
+
+    async fn react_to(&self, room_id: &RoomId, event_id: &EventId, reaction: &str) -> Result<()> {
+        let r = ReactionEventContent::new(Relation::new(event_id.into(), reaction.to_string()));
+        let r = AnyMessageLikeEventContent::Reaction(r);
+
+        self.joined(room_id).await?.send(r, None).await?;
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl traits::ChatService for MatrixClient {
+    fn channel(&self) -> <ChatChannel as Channel>::Receiver {
+        // XXX this is not so great and should perhaps be rewritten either with Result<Reciever> or more likely with some kind of RefCell
+        self.event_rx.take().unwrap()
+    }
+
+    async fn rescan(&self, since: DateTime<Utc>) {
+        let channels = self
+            .config
+            .channels
+            .clone()
+            .unwrap_or_else(|| self.joined_room_ids());
+
+        for channel in channels.iter() {
+            if let Ok(joined) = self.get_room_try_join(channel).await.log::<OnError>() {
+                self.scan_room_and_ancestors(joined.into(), since).await;
+            }
+        }
+    }
+
+    async fn get_user_info(&self, user_id: String) -> Result<Option<Sender>> {
+        let user_id = OwnedUserId::try_from(user_id)?;
+        Ok(self.user_info(user_id).await)
     }
 }
 
@@ -700,10 +886,39 @@ impl Display for RoomAncestry {
 }
 
 impl RoomAncestry {
-    async fn get(room: Room) -> RoomAncestry {
-        //! scan for descendants and ancestors of room,
-        //! TODO joining if needed and possible.
+    async fn get_try_join(room: Room) -> RoomAncestry {
+        let client = room.client();
+        let mut already_tried = Vec::new();
 
+        loop {
+            let ancestry = Self::get(&room).await;
+            if !ancestry.is_complete() {
+                if let Some(unjoined_room) = ancestry
+                    .lineage
+                    .iter()
+                    .cloned()
+                    .filter_map(Result::err)
+                    .find(|r| !already_tried.contains(r))
+                {
+                    already_tried.push(unjoined_room.clone());
+                    client
+                        .join_room_by_id(&unjoined_room)
+                        .await
+                        .log::<OnError>()
+                        .ignore();
+
+                    // loop untill there are no unjoined rooms which we haven't tried to join.
+                    // joining a room may cause new room to show up in ancestry
+                    continue;
+                }
+            }
+
+            return ancestry;
+        }
+    }
+
+    async fn get(room: &Room) -> RoomAncestry {
+        //! scan for descendants and ancestors of room,
         let mut ret = RoomAncestry::default();
         let client = room.client().clone();
 
@@ -756,80 +971,8 @@ impl RoomAncestry {
 
         ret
     }
-}
 
-//TODO
-async fn scan_room_history(room: Room) {
-    fn event_content(event: AnySyncTimelineEvent) -> Option<String> {
-        match event {
-            AnySyncTimelineEvent::MessageLike(event) => match event {
-                AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(event)) => {
-                    Some(event.content.msgtype.body().to_owned())
-                }
-                AnySyncMessageLikeEvent::Reaction(SyncMessageLikeEvent::Original(_event)) => {
-                    //dbg!(event);
-                    None
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    let mut opt = MessagesOptions::backward();
-    opt.limit = 100.try_into().unwrap();
-
-    //let s = vec!["*".to_string()];
-    //opt.filter.types = Some(s.as_ref());
-    let backward_stream = room.timeline_backward().await.unwrap();
-
-    pin_mut!(backward_stream);
-
-    while let Some(event) = backward_stream.next().await {
-        let event = event.unwrap().event.deserialize().unwrap();
-        if let Some(related) = event.relations() {
-            dbg!(related);
-            /*
-            {
-                annotation: Some(
-                    AnnotationChunk {
-                        chunk: [
-                            BundledAnnotation {
-                                annotation_type: Reaction,
-                                key: "✅",
-                                origin_server_ts: None,
-                                count: 1,
-                            },
-                        ],
-                        next_batch: None,
-                    },
-                ),
-                replace: None,
-            }
-            */
-            // not helpfull, only includes emoji and not username of sender
-        }
-
-        let _datetime: DateTime<Utc> = event.origin_server_ts().to_system_time().unwrap().into();
-        if let Some(content) = event_content(event.clone()) {
-            let links = extract_urls(content);
-            if !links.is_empty() {
-                let print: Vec<String> = links
-                    .iter()
-                    .map(|url| match parse_url(url.clone()) {
-                        Some(link) => format!(
-                            "{}:{}:{}",
-                            link.service,
-                            link.kind.map_or_else(|| "".to_string(), |v| v.to_string()),
-                            link.id
-                        ),
-                        None => url.to_string(),
-                    })
-                    .collect();
-                if !print.is_empty() {
-                    //println!("{} {} {:#?}", datetime, event.sender(), print);
-                }
-            }
-        }
+    fn is_complete(&self) -> bool {
+        self.lineage.iter().any(|r| r.is_err())
     }
 }

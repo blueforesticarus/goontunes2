@@ -1,6 +1,7 @@
 #![feature(async_closure)]
 #![feature(associated_type_defaults)]
 #![feature(min_specialization)]
+#![feature(try_blocks)]
 //#![allow(dead_code)]
 
 pub mod config;
@@ -13,6 +14,7 @@ pub mod utils {
     pub mod channel;
     pub mod links;
     pub mod takecell;
+    pub mod when_even;
 }
 pub mod service {
     //pub mod discord;

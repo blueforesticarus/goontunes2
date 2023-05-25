@@ -2,11 +2,13 @@
 // this time lets build from the ground up for persistence
 
 use crate::{
-    database::{SurrealAsLink, SurrealLink, SurrealTable},
-    service::{spotify::SpotifyTrackMetadata, youtube::YoutubeTrackMetadata},
+    database::{SurrealAsLink, SurrealLink},
+    service::{spotify::types::SpotifyTrackMetadata, youtube::YoutubeTrackMetadata},
 };
+use derivative::Derivative;
 use eyre::Result;
 use std::path::PathBuf;
+use surrealdb::sql;
 
 use chrono::{offset::Utc, DateTime};
 use serde::{Deserialize, Serialize};
@@ -18,7 +20,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SongId(Uuid);
 impl SurrealLink for SongId {
-    const NAME: &'static str = "song";
+    const TABLE: &'static str = "song";
 }
 
 pub struct Song {
@@ -68,14 +70,16 @@ pub struct TrackId {
 }
 
 impl SurrealLink for TrackId {
-    const NAME: &'static str = "track";
+    const TABLE: &'static str = "track";
 }
 
 /// A track for a single service
 /// see `Song` for generic data
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
-    id: TrackId,
-    metadata: TrackMetaData,
+    pub id: TrackId,
+    pub name: String,
+    //pub metadata: Option<TrackMetaData>,
 }
 
 pub enum TrackMetaData {
@@ -91,21 +95,21 @@ pub struct CollectionId {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Collection {
-    id: CollectionId,
-    kind: Kind,
-    owner: String,
-    size: usize,
-    ignored: bool,
-    rev: String,
-    date: DateTime<Utc>,
-    name: String,
+pub struct Collection<T = TrackId> {
+    pub id: CollectionId,
+    pub kind: Kind,
+    //pub owner: String,
+    //pub size: usize,
+    //pub ignored: bool,
+    //pub rev: String,
+    //pub date: DateTime<Utc>,
+    pub name: String,
 
     /// Do we expect it to change?
-    expect_static: bool,
+    //pub expect_static: bool,
 
-    #[serde_as(as = "Vec<SurrealAsLink>")]
-    tracks: Vec<TrackId>,
+    //#[serde_as(as = "Vec<SurrealAsLink>")]
+    pub tracks: Vec<T>,
 }
 
 // CHAT SERVICE TYPES
@@ -133,8 +137,10 @@ pub enum Kind {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChannelId {
     pub service: ChatService,
-
     pub id: String,
+}
+impl SurrealLink for ChannelId {
+    const TABLE: &'static str = "channel";
 }
 
 //TODO to_string/from_string impl which will make json config easier while still expanding data in surreal
@@ -144,19 +150,22 @@ pub struct SenderId {
     pub id: String,
 }
 impl SurrealLink for SenderId {
-    const NAME: &'static str = "sender";
+    const TABLE: &'static str = "sender";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageId(pub String);
 impl SurrealLink for MessageId {
-    const NAME: &'static str = "message";
+    const TABLE: &'static str = "message";
 }
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    #[serde_as(as = "SurrealAsLink")]
     pub id: MessageId,
+
+    #[serde_as(as = "SurrealAsLink")]
     pub channel: ChannelId,
 
     #[serde_as(as = "SurrealAsLink")]
@@ -164,28 +173,122 @@ pub struct Message {
     pub date: DateTime<Utc>,
     pub links: Vec<Link>,
 }
-impl SurrealTable for Message {
-    const NAME: &'static str = "message";
-    // fn id(&self) -> Option<Id> {
-    //     Some(self.id.clone().into())
-    // }
-}
+
 /// This data will actually be stuck into a relation
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Derivative, Clone, Deserialize, Serialize)]
+#[derivative(Debug)]
 pub struct Link {
     pub service: MusicService,
     pub id: String,
     pub kind: Option<Kind>,
+
+    #[derivative(Debug(format_with = "urlfmt"))]
     pub url: Url,
 }
 
+fn urlfmt(url: &Url, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+    write!(f, "Url(\"{}\")", url.as_str())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReactionId(pub String);
+impl SurrealLink for ReactionId {
+    const TABLE: &'static str = "reaction";
+}
+
 // needs to stored with RELATE
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reaction {
+    #[serde_as(as = "SurrealAsLink")]
+    pub id: ReactionId,
+
+    #[serde_as(as = "SurrealAsLink")]
     pub sender: SenderId,
+    #[serde_as(as = "SurrealAsLink")]
     pub target: MessageId,
+
     pub date: DateTime<Utc>,
-    pub id: MessageId,
 
     pub txt: Vec<String>, //Normally single, but lets support multible for the hell of it.
+}
+
+type Png = Vec<u8>;
+#[derive(Debug, Clone)]
+pub struct Sender {
+    pub id: SenderId,
+    pub alias: Vec<String>,
+    pub avatar: Option<Png>,
+}
+
+mod examples {
+    use crate::traits::Example;
+
+    use super::*;
+
+    impl Example for Message {
+        fn example() -> Self {
+            Message {
+                id: MessageId::example(),
+                channel: ChannelId::example(),
+                sender: SenderId::example(),
+                date: DateTime::example(),
+                links: vec![Link::example()],
+            }
+        }
+    }
+
+    impl Example for Reaction {
+        fn example() -> Self {
+            Reaction {
+                date: DateTime::example(),
+                id: ReactionId::example(),
+                sender: SenderId::example(),
+                target: MessageId::example(),
+                txt: vec!["👍".to_string()],
+            }
+        }
+    }
+
+    impl Example for Link {
+        fn example() -> Self {
+            Link {
+                service: MusicService::Spotify,
+                id: "7qo1SVGPYmkt5eYJSNaqEP".into(),
+                kind: Some(Kind::Track),
+                url: Url::try_from(
+                    "https://open.spotify.com/track/7qo1SVGPYmkt5eYJSNaqEP?si=f0e5baf03b6f4d34",
+                )
+                .unwrap(),
+            }
+        }
+    }
+    impl Example for MessageId {
+        fn example() -> Self {
+            Self("$Rg2llRNuHiVIRvxxVJm11TBzO54O4lVbiPCJbXti7Xg".into())
+        }
+    }
+
+    impl Example for ReactionId {
+        fn example() -> Self {
+            Self("$BzO54O4lVbiPCJbXtiefeTs6llRNuHiVIRvxxsdf11T".into())
+        }
+    }
+
+    impl Example for ChannelId {
+        fn example() -> Self {
+            ChannelId {
+                service: ChatService::Matrix,
+                id: "!xzXpBNaPblPrPkTPYb:matrix.org".into(),
+            }
+        }
+    }
+    impl Example for SenderId {
+        fn example() -> Self {
+            SenderId {
+                service: ChatService::Matrix,
+                id: "@segfau1t:matrix.org".into(),
+            }
+        }
+    }
 }
