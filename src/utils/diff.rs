@@ -114,17 +114,37 @@ func (self *ServicePlaylist) Update(p *Playlist) error {
 }
  */
 
-use std::collections::{BTreeMap, HashMap};
-
 use itertools::Itertools;
+
+#[derive(Debug, Clone, Copy)]
+/// Configures how playlist updates are sequenced
+pub struct SequenceOptions {
+    /// Whether to disambiguate indices for deletions
+    /// if false, only ids are specified and all occurances will be removed, possibly requiring re-adding them to other locations
+    /// this exists because indexed delete is an undocumented feature of the spotify api, which we might not want to depend on
+    /// see: https://community.spotify.com/t5/Spotify-for-Developers/How-delete-one-or-more-elements-from-playlist/td-p/5185630
+    pub delete_positional: bool,
+
+    /// max tracks per Add / Delete api request
+    pub max_n: usize,
+}
+
+impl Default for SequenceOptions {
+    fn default() -> Self {
+        Self {
+            delete_positional: true,
+            max_n: 100, // spotify max is 100
+        }
+    }
+}
 
 /// Plan out api requests for updating playlist
 pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
     before: Vec<T>,
     after: Vec<T>,
+    opt: SequenceOptions,
 ) -> Vec<Actions<T>> {
-    let max_n = 100; // max changes per op
-    let delete_positional = true; // can we specify index in delete?
+    // list of api requests ie. adds and deletes (return value)
     let mut actions = Vec::new();
 
     // Diffs are hard. We know the index of things in the new struct, but not in the steps inbetween.
@@ -132,6 +152,7 @@ pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
     // Keep in mind we do not have the ability specify snapshot for Adds
     let mut simulated = before.clone();
 
+    // First pass: Deletions
     let diff = similar::capture_diff_slices(similar::Algorithm::Patience, &before, &after);
     for d in diff.iter().rev() {
         match d {
@@ -145,28 +166,37 @@ pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
                 let a = before[index.clone()]
                     .iter()
                     .enumerate()
-                    .chunks(max_n)
+                    .chunks(opt.max_n)
                     .into_iter()
-                    .map(|chunk| match delete_positional {
+                    .map(|chunk| match opt.delete_positional {
                         true => {
+                            // delete by id and index
                             let chunk = chunk.map(|(i, t)| (i, t.clone())).collect_vec();
                             Actions::Delete(chunk, Default::default())
                         }
                         false => {
-                            let chunk = chunk.map(|(i, t)| t.clone()).collect_vec();
+                            // delete by id (all occurances)
+                            let chunk = chunk.map(|(_, t)| t.clone()).collect_vec();
                             Actions::DeleteAll(chunk, Default::default())
                         }
                     })
                     .collect_vec();
                 actions.extend(a);
 
-                let removed = simulated.drain(index.clone()).collect_vec();
-                assert!(removed == before[index], "diffs need to be sorted");
+                // update simulation
+                if opt.delete_positional {
+                    let removed = simulated.drain(index.clone()).collect_vec();
+                    assert!(removed == before[index], "diffs need to be sorted");
+                } else {
+                    // remove *all occurances* of ids
+                    simulated.retain(|t| !before[index.clone()].contains(t))
+                }
             }
             _ => { /* skip inserts on first pass */ }
         }
     }
 
+    // Second pass: Insertions
     let diff = similar::capture_diff_slices(similar::Algorithm::Patience, &simulated, &after);
     for d in diff.iter().rev() {
         match d {
@@ -177,13 +207,14 @@ pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
                 ..
             } => {
                 let new_slice = *new_index..(new_index + new_len);
-                let elements = after[new_slice].to_owned();
+                let elements = after[new_slice.clone()].to_owned();
                 actions.push(Actions::Add(elements.clone(), *old_index));
 
+                // update simulation
                 simulated.splice(old_index..old_index, elements);
 
-                let new_slice = *new_index..(new_index + new_len);
-                assert!(simulated[new_slice.clone()] == after[new_slice]);
+                let old_slice = *old_index..(old_index + new_len);
+                assert!(simulated[old_slice] == after[new_slice]);
             }
             similar::DiffOp::Equal { .. } => {}
             _ => {
@@ -196,12 +227,12 @@ pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
 
     // Check if current plan is worse (more api requests) than clearing and rebuilding the whole playlist.
     // Note: if actually using snapshot actions, then correct actions count.
-    let worst_case = (after.len() + max_n - 1) / max_n;
+    let worst_case = (after.len() + opt.max_n - 1) / opt.max_n;
     if actions.len() >= worst_case {
         actions.clear();
         simulated.clear();
 
-        let items = after.iter().chunks(max_n);
+        let items = after.iter().chunks(opt.max_n);
         let mut items = items.into_iter().map(|f| f.cloned().collect_vec());
 
         // First action is replace, which clears the playlist
@@ -256,35 +287,54 @@ pub enum Actions<T> {
 
 #[cfg(test)]
 mod test {
+    use std::default;
+
     use itertools::Itertools;
+
+    use crate::utils::diff::SequenceOptions;
 
     use super::sequence;
 
     #[test]
+    /// minimal test of playlist update sequenceing logic
     fn test_delete_append() {
         let before = vec!["red", "blue", "green", "yellow"];
-
         let after = vec!["blue", "green", "yellow", "black"];
+        sequence(before.clone(), after.clone(), Default::default());
+        sequence(after, before, Default::default());
     }
 
     #[test]
+    /// robust test of playlist update sequenceing logic
+    /// simulates many additions, deletions of varying sizes, including duplicate ids
     fn test_big_playlist() {
-        let mut before = (0..2000).map(|v| v.to_string()).collect_vec();
-        before.splice(300..400, (400..500).map(|v| v.to_string())); // some repeat values
-        before.splice(203..205, (0..3).map(|_| "203".to_string())); // some contiguous repeat values
+        fn test(opts: SequenceOptions) {
+            let mut before = (0..2000).map(|v| v.to_string()).collect_vec();
+            before.splice(300..400, (400..500).map(|v| v.to_string())); // some repeat values
+            before.splice(203..205, (0..3).map(|_| "203".to_string())); // some contiguous repeat values
 
-        let mut after = before.clone();
-        after.extend((3000..3234).map(|v| v.to_string())); // big append
-        after.drain(1500..1892); // big delete
-        after.drain(1411..1414); // small delete
-        after.remove(1306); // single delete
-        after.remove(1300); // single delete
+            let mut after = before.clone();
+            after.extend((3000..3234).map(|v| v.to_string())); // big append
+            after.drain(1500..1892); // big delete
+            after.drain(1411..1414); // small delete
+            after.remove(1306); // single delete
+            after.remove(1300); // single delete
 
-        after.remove(444); // single delete (repeat id)
-        after.drain(255..367); // repeat id delete span
-        after.drain(203..204); // delete (repeat id, both)
+            after.remove(444); // single delete (repeat id)
+            after.drain(255..367); // repeat id delete span
+            after.drain(203..204); // delete (repeat id, both)
 
-        // sequence has its own asserts and simulation, test passes if it doesnt panic
-        sequence(before, after);
+            // sequence has its own asserts and simulation, test passes if it doesnt panic
+            sequence(before.clone(), after.clone(), opts);
+
+            // going backwards also makes a good test
+            sequence(after, before, opts);
+        }
+
+        test(Default::default());
+        test(SequenceOptions {
+            delete_positional: false,
+            ..Default::default()
+        });
     }
 }
