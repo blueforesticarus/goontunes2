@@ -12,6 +12,7 @@ pub mod types;
 
 pub mod utils {
     pub mod channel;
+    pub mod diff;
     pub mod links;
     pub mod takecell;
     pub mod when_even;
