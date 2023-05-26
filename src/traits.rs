@@ -1,6 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::types::{Collection, CollectionId, Message, Reaction, Sender, Track, TrackMetaData};
+use crate::types::{self, Collection, CollectionId, Message, Reaction, Sender, Track};
 use crate::utils::channel::{Channel, Mpsc};
 //XXX: What is the correct way to define this. I still don't know
 
@@ -35,7 +35,10 @@ pub trait PlaylistService {
 
     //async fn fetch_playlist(id: String) -> Collection;
     //async fn fetch_metadata() -> TrackMetaData;
-    async fn get_tracks(&self, id: CollectionId) -> eyre::Result<Collection<Track>>;
+    async fn get_album(&self, id: types::Uri) -> eyre::Result<Collection<Track>>;
+    async fn get_playlist(&self, id: types::Uri) -> eyre::Result<Collection<Track>>;
+
+    //async fn get(&self, id: types::Uri) -> eyre::Result<Item>;
 }
 
 /// A trait that defines a *stable* example value, to be used in tests, help messages, and example config generation.

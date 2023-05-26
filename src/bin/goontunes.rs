@@ -92,7 +92,7 @@ async fn delegate() -> Result<()> {
             let client = config.init().await?;
 
             let collection = client
-                .get_tracks(CollectionId {
+                .get_album(CollectionId {
                     service: goontunes::types::MusicService::Spotify,
                     id,
                 })

@@ -1,26 +1,20 @@
 use async_trait::async_trait;
+use eyre::bail;
 use futures::{StreamExt, TryStreamExt};
 use itertools::Itertools;
 use rspotify::{
-    model::SimplifiedTrack,
-    prelude::{BaseClient, Id},
+    model::{
+        track, AlbumId, FullTrack, PlayableItem, PlaylistId, PlaylistItem, SimplifiedTrack, Uri,
+    },
+    prelude::{BaseClient, Id, PlayableId},
     ClientResult,
 };
 
 use crate::{
+    playlist,
     traits::PlaylistService,
-    types::{Collection, CollectionId, Track, TrackId},
+    types::{self, Collection, CollectionId, PlaylistTrackError, Track, TrackId},
 };
-
-use self::types::SpotifyTrackMetadata;
-
-pub mod types {
-    pub type SpotifyExtraInfo = String;
-    pub struct SpotifyTrackMetadata {
-        pub info: String,
-        pub extra: SpotifyExtraInfo,
-    }
-}
 
 pub mod client {
     use crate::traits::Example;
@@ -155,28 +149,15 @@ mod cruft {
         AuthCodeSpotify, ClientResult,
     };
 
-    pub enum SpotifyIds<'a> {
-        Album(AlbumId<'a>),
-        Playlist(PlaylistId<'a>),
-    }
-
-    impl TryFrom<types::CollectionId> for SpotifyIds<'static> {
+    impl TryFrom<types::CollectionId> for Uri<'static> {
         type Error = IdError;
 
         fn try_from(value: types::CollectionId) -> Result<Self, Self::Error> {
             if value.service != types::MusicService::Spotify {
                 return Err(IdError::InvalidPrefix);
             }
-            let (kind, id) = parse_uri(&value.id)?;
-            match kind {
-                rspotify::model::Type::Album => {
-                    AlbumId::from_id(id.to_string()).map(SpotifyIds::Album)
-                }
-                rspotify::model::Type::Playlist => {
-                    PlaylistId::from_id(id.to_string()).map(SpotifyIds::Playlist)
-                }
-                _ => Err(IdError::InvalidType),
-            }
+
+            Ok(Uri::from_uri(&value.id)?.into_static())
         }
     }
 
@@ -188,38 +169,73 @@ mod cruft {
             }
         }
     }
+
+    impl TryFrom<types::Uri> for Uri<'static> {
+        type Error = IdError;
+
+        fn try_from(value: types::Uri) -> Result<Self, Self::Error> {
+            Uri::from_uri(&value.0).map(Uri::into_static)
+        }
+    }
 }
 
 #[async_trait]
 impl PlaylistService for client::Client {
-    async fn get_tracks(&self, id: CollectionId) -> eyre::Result<Collection<Track>> {
-        let spotify_id: cruft::SpotifyIds = id.clone().try_into().unwrap();
-        match spotify_id {
-            cruft::SpotifyIds::Album(a) => {
-                let album = self.client.album(a.clone()).await?;
-                let tracks: ClientResult<Vec<SimplifiedTrack>> =
-                    self.client.paginate(album.tracks).try_collect().await;
+    async fn get_playlist(&self, id: types::Uri) -> eyre::Result<Collection<Track>> {
+        let pid: PlaylistId = Uri::try_from(id.clone()).unwrap().try_into().unwrap();
+        let playlist = self.client.playlist(pid, None, None).await?;
+        let tracks: ClientResult<Vec<PlaylistItem>> =
+            self.client.paginate(playlist.tracks).try_collect().await;
 
-                // let tracks: ClientResult<Vec<SimplifiedTrack>> =
-                //     self.client.album_track(a).try_collect().await;
+        let tracks = tracks?
+            .into_iter()
+            .map(|t| {
+                let t = match t.track {
+                    Some(PlayableItem::Track(t)) => t,
+                    Some(_) => Err(PlaylistTrackError::NotTrack)?,
+                    None => Err(PlaylistTrackError::Missing)?,
+                };
 
-                let tracks = tracks?
-                    .into_iter()
-                    .map(|t| Track {
-                        //metadata: None,
-                        name: t.name,
-                        id: TrackId::from(t.id.expect("why wouldn't there be a track id?")),
-                    })
-                    .collect_vec();
-
-                Ok(Collection {
-                    id,
-                    kind: crate::types::Kind::Album,
-                    name: album.name,
-                    tracks,
+                Ok(Track {
+                    //metadata: None,
+                    name: t.name,
+                    id: t.id.expect("why no id").into(),
                 })
-            }
-            cruft::SpotifyIds::Playlist(a) => todo!(),
-        }
+            })
+            .collect_vec();
+
+        Ok(Collection {
+            id,
+            kind: crate::types::Kind::Album,
+            name: playlist.name,
+            tracks,
+        })
+    }
+
+    async fn get_album(&self, id: types::Uri) -> eyre::Result<Collection<Track>> {
+        let aid: AlbumId = Uri::try_from(id.clone()).unwrap().try_into().unwrap();
+        let album = self.client.album(aid).await?;
+        let tracks: ClientResult<Vec<SimplifiedTrack>> =
+            self.client.paginate(album.tracks).try_collect().await;
+
+        // let tracks: ClientResult<Vec<SimplifiedTrack>> =
+        //     self.client.album_track(a).try_collect().await;
+
+        let tracks = tracks?
+            .into_iter()
+            .map(|t| Track {
+                //metadata: None,
+                name: t.name,
+                id: TrackId::from(t.id.expect("why wouldn't there be a track id?")),
+            })
+            .map(Ok)
+            .collect_vec();
+
+        Ok(Collection {
+            id,
+            kind: crate::types::Kind::Album,
+            name: album.name,
+            tracks,
+        })
     }
 }

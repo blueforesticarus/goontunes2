@@ -136,7 +136,7 @@ fn clean channel
 fn init db
  */
 
-use crate::types;
+use crate::types::{self, Track, TrackId};
 
 #[derive(Debug, Clone)]
 pub struct Database {
@@ -155,8 +155,20 @@ impl Database {
         let ret: Option<types::Message> = self
             .db
             .update(("message", &message.id.0))
-            .content(message)
+            .content(message.clone())
             .await?;
+
+        for link in message.links {
+            self.relate_link(
+                message.id.clone(),
+                TrackId {
+                    service: link.service.clone(),
+                    id: link.clone().id,
+                },
+                link,
+            )
+            .await
+        }
 
         //dbg!(ret);
         Ok(())
@@ -171,6 +183,21 @@ impl Database {
 
         //dbg!(ret);
         Ok(())
+    }
+
+    pub async fn relate_link(
+        &self,
+        message: types::MessageId,
+        track: types::TrackId,
+        link: types::Link,
+    ) {
+        self.db
+            .query("RELATE $message->links->$track CONTENT $link")
+            .bind(("message", message))
+            .bind(("track", track))
+            .bind(("link", link))
+            .await
+            .unwrap();
     }
 }
 

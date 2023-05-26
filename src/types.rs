@@ -1,10 +1,7 @@
 // lets use surreal db
 // this time lets build from the ground up for persistence
 
-use crate::{
-    database::{SurrealAsLink, SurrealLink},
-    service::{spotify::types::SpotifyTrackMetadata, youtube::YoutubeTrackMetadata},
-};
+use crate::database::{SurrealAsLink, SurrealLink};
 use derivative::Derivative;
 use eyre::Result;
 use std::path::PathBuf;
@@ -51,6 +48,9 @@ pub struct Artist {
 }
 */
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Uri(pub String);
+
 // MUSIC SERVICE TYPES
 #[derive(
     Debug, Clone, PartialEq, Eq, Display, EnumString, DeserializeFromStr, SerializeDisplay,
@@ -61,6 +61,12 @@ pub enum MusicService {
     Spotify,
     Youtube,
     Soundcloud,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PlaylistTrackError {
+    Missing,
+    NotTrack,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,13 +85,12 @@ impl SurrealLink for TrackId {
 pub struct Track {
     pub id: TrackId,
     pub name: String,
-    //pub metadata: Option<TrackMetaData>,
 }
 
-pub enum TrackMetaData {
-    Spotify(SpotifyTrackMetadata),
-    Youtube(YoutubeTrackMetadata),
-}
+// pub enum TrackMetaData {
+//     Spotify(SpotifyTrackMetadata),
+//     Youtube(YoutubeTrackMetadata),
+// }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionId {
@@ -96,7 +101,7 @@ pub struct CollectionId {
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Collection<T = TrackId> {
-    pub id: CollectionId,
+    pub id: Uri,
     pub kind: Kind,
     //pub owner: String,
     //pub size: usize,
@@ -109,7 +114,7 @@ pub struct Collection<T = TrackId> {
     //pub expect_static: bool,
 
     //#[serde_as(as = "Vec<SurrealAsLink>")]
-    pub tracks: Vec<T>,
+    pub tracks: Vec<Result<T, PlaylistTrackError>>,
 }
 
 // CHAT SERVICE TYPES
@@ -171,6 +176,8 @@ pub struct Message {
     #[serde_as(as = "SurrealAsLink")]
     pub sender: SenderId,
     pub date: DateTime<Utc>,
+
+    #[serde(skip_serializing)]
     pub links: Vec<Link>,
 }
 
