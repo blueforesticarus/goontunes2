@@ -15,7 +15,7 @@ struct Client {
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     color_eyre::install()?;
-    let token = "ODc4MzM3ODUyOTU2NjE4ODAy.GXPbqP.-X9UudO7ezgrwl6nd4kb6w2n5CC7cOTj67UMGQ";
+    let token = "";
 
     // Use intents to only receive guild message events.
 

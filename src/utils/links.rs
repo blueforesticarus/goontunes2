@@ -1,9 +1,17 @@
+use itertools::Itertools;
 use linkify::{LinkFinder, LinkKind};
 use regex::Regex;
 
 use url::Url;
 
 use crate::types::{Link, MusicService};
+
+pub fn extract_links(content: String) -> Vec<Link> {
+    extract_urls(content)
+        .iter()
+        .filter_map(|url| parse_url(url))
+        .collect_vec()
+}
 
 pub fn extract_urls(content: String) -> Vec<Url> {
     let mut finder = LinkFinder::new();
@@ -17,12 +25,13 @@ pub fn extract_urls(content: String) -> Vec<Url> {
     links
 }
 
-pub fn parse_url(url: Url) -> Option<Link> {
+pub fn parse_url(url: &Url) -> Option<Link> {
     let mut entry = Link {
         url: url.clone(),
         service: MusicService::Spotify, //dummy
         id: Default::default(),
         kind: None,
+        target: todo!(),
     };
 
     let host = url.host_str().unwrap_or_default();
@@ -96,7 +105,7 @@ mod tests {
         assert_eq!(urls.len(), 10, "{:?}", urls);
 
         for url in urls {
-            let link = parse_url(url.clone());
+            let link = parse_url(&url);
             assert!(link.is_some(), "invalid {}", url);
         }
     }

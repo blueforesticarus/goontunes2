@@ -1,9 +1,7 @@
-use crate::{
-    service::{self, matrix::MatrixConfig},
-    traits::Example,
-};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+
+use crate::service::discord::DiscordConfig;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -12,15 +10,6 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn example() -> Self {
-        Config {
-            services: vec![
-                MatrixConfig::example().into(),
-                service::spotify::client::Config::example().into(),
-            ],
-        }
-    }
-
     pub fn get_service<'a, T: TryFrom<&'a ServiceConfig>>(&'a self) -> Vec<T> {
         self.services
             .iter()
@@ -29,23 +18,8 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, derive_more::TryInto, derive_more::From)]
-#[try_into(owned, ref, ref_mut)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ServiceConfig {
-    Matrix(MatrixConfig),
-    Spotify(service::spotify::client::Config),
-}
-
-struct PlaylistConfig {
-    inputs: Vec<PlaylistMember>,
-    outputs: Vec<PlaylistMember>,
-    sync: Vec<PlaylistMember>, // is input and output (ex. file)
-
-    transforms: (), // filter, transform, bash script
-}
-
-enum PlaylistMember {
-    //Channel(Channel)
-    //Playlist(Playlist)
-    //File(File)
+    Discord(DiscordConfig),
 }

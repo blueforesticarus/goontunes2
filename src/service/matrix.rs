@@ -1,13 +1,3 @@
-use crate::{
-    traits::{ChatChannel, ChatEvent},
-    types::{Reaction, Sender, SenderId},
-    utils::{
-        channel::Channel,
-        links::{extract_urls, parse_url},
-        takecell::TakeCell,
-        when_even::{Ignoreable, Loggable, OnError},
-    },
-};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use postage::sink::Sink;
 use serde::{Deserialize, Serialize};
@@ -598,9 +588,9 @@ impl MatrixClient {
 
         let t = room.event(&event_id).await?;
         let t: AnySyncTimelineEvent = t.event.deserialize()?.into();
-        let AnySyncTimelineEvent::MessageLike(
-            AnySyncMessageLikeEvent::RoomMessage(t)
-        ) = t else { bail!("{:?}", t) };
+        let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(t)) = t else {
+            bail!("{:?}", t)
+        };
 
         match t {
             SyncMessageLikeEvent::Original(t) => {
@@ -683,7 +673,9 @@ impl MatrixClient {
                     .context("idk")?
                     .clone()
             };
-            let Ok(event) = event.log::<OnError>() else {continue};
+            let Ok(event) = event.log::<OnError>() else {
+                continue;
+            };
             let dt: DateTime<Utc> = event.origin_server_ts.to_system_time().unwrap().into();
             if dt > since {
                 // this room was created after the since date, so previous room was ended before earliest messages we are scanning for

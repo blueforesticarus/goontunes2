@@ -4,23 +4,16 @@ use rspotify::{
 
 use futures::StreamExt;
 
-
 #[tokio::main]
 async fn main() {
     // You can use any logger for debugging.
     env_logger::init();
 
-    /*
-    clientid: 1d68b91899e746fcab809f446472e27f
-    clientsecret: 3dd9e31a841f490db4b1ed05a5a7cdf0
-    redirect_uri: http://localhost:9091
-     */
-
     // The credentials must be available in the environment. Enable the
     // `env-file` feature in order to read them from an `.env` file.
     let creds = Credentials {
-        id: "1d68b91899e746fcab809f446472e27f".to_string(),
-        secret: Some("3dd9e31a841f490db4b1ed05a5a7cdf0".to_string()),
+        id: "".to_string(),
+        secret: Some("".to_string()),
     };
 
     // Using every possible scope

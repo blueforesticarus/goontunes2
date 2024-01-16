@@ -9,7 +9,7 @@ edition = "2021"
 # basic
 clap = { version = "4.1.6", features = ["env", "derive"] }
 color-eyre = "0.6.2"
-dirs = "4.0.0"
+dirs = "5.0.1"
 env_logger = "0.10.0"
 eyre = "0.6.8"
 futures = "0.3.26"
@@ -18,9 +18,9 @@ chrono = "*"
 tokio = { version = "1.25.0", features = ["full"] }
 tracing-subscriber = "0.3.16"
 lazy_static = "1.4.0"
-strum = { version = "0.24.1", features = ["derive"] }
+strum = { version = "0.25.0", features = ["derive"] }
 regex = "1.7.1"
-linkify = "0.9.0" #extract urls from text
+linkify = "0.10.0" #extract urls from text
 serde = "*"
 serde_json = "*"
 
@@ -28,18 +28,16 @@ serde_json = "*"
 matrix-sdk = { version = "0.6.2", features = ["eyre", "e2e-encryption", "sled", "experimental-timeline", "markdown"] }
 
 # spotify support
-rspotify = { version = "0.11.5", features = ["cli"] }
+rspotify = { version = "0.12.0", features = ["cli"] }
 
 # discord support
-twilight-cache-inmemory = "0.15.1"
-twilight-gateway = "0.15.1"
-twilight-http = "0.15.1"
-twilight-model = "0.15.1"
-serenity = {version = "0.11.5", default-features = false, features = ["client", "gateway", "rustls_backend", "model"] } # disable default `framework` feature
+serenity = {version = "0.11.6", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "chrono"] } # disable default `framework` feature
 
 # database support
 surrealdb = {version = "1.0.0-beta.9", features = ["kv-rocksdb", "kv-mem"]}
-serde_with = "2.2.0"
+
+rustyline-async = "0.4.0"
+serde_with = "3.4.0"
 async-trait = "0.1.64"
 shellexpand = { version = "3.0.0", features = ["path"] }
 hostname = "0.3.1"
@@ -50,14 +48,15 @@ parking_lot = "0.12.1"
 derive_more = "0.99.17"
 tracing = "0.1.37"
 derivative = "2.2.0"
-itertools = "0.10.5"
+itertools = "0.11.0"
 async-stream = "0.3.5"
 similar = "2.2.1"
+deadqueue = "0.2.4"
 
 [patch.crates-io]
 # matrix-sdk needs this, which specifies old version of zeroize for weird compat reason : https://github.com/dalek-cryptography/x25519-dalek/commit/adbd0e37a414d2c8ce2e6008bf688101347f10ce
 # see : https://github.com/dalek-cryptography/x25519-dalek/issues/92
 # waiting on 2.0 : https://github.com/dalek-cryptography/x25519-dalek/issues/99
 x25519-dalek = { path = "forks/x25519-dalek" }
-surrealdb = { path = "forks/surrealdb/lib"}
-rspotify = { path = "forks/rspotify"}
+#surrealdb = { path = "forks/surrealdb/lib"}
+#rspotify = { path = "forks/rspotify"}

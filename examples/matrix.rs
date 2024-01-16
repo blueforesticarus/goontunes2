@@ -271,8 +271,8 @@ async fn on_room_message(event: OriginalSyncRoomMessageEvent, room: Room) {
             } else if text_content.body.contains("!scan") {
                 let room = room
                     .client()
-                    //.get_room(&OwnedRoomId::from_str("!hGCtIIRpCBMylILOoc:matrix.org").unwrap())
-                    .get_room(&OwnedRoomId::from_str("!mXEFBvHoJyDuNhDkyc:matrix.org").unwrap())
+                    //.get_room(&OwnedRoomId::from_str("!:matrix.org").unwrap())
+                    .get_room(&OwnedRoomId::from_str("!:matrix.org").unwrap())
                     .unwrap();
 
                 /*
@@ -370,5 +370,3 @@ async fn on_room_message(event: OriginalSyncRoomMessageEvent, room: Room) {
         }
     }
 }
-
-// 2022-11-29T06:46:50.828282Z  WARN matrix_sdk_crypto::identities::device: Trying to encrypt a Megolm session for user @cereal_killer:matrix.org on device DDFDNWUPSV, but no Olm session is found

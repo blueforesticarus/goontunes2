@@ -1,56 +1,61 @@
-// twilight has no function to extract emoji reacts
-// serenity only has query:str for messages pagination
-// NOTE, why isn't the data model completely abstracted away, so you just access things and it gets it from http, cache, ws, custom code etc automatically
+use std::pin::pin;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use eyre::Result;
+use futures::{StreamExt, TryStreamExt};
+use itertools::Itertools;
 use serenity::{
     model::prelude::{Message, Reaction, Ready},
     prelude::{Context, EventHandler, GatewayIntents},
     Client,
 };
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use surrealdb::sql::Thing;
+
+use crate::{database::Database, types};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordConfig {
     /// discord bot token
     token: String,
+
+    /// channels
+    channels: Vec<String>,
 }
 
-impl DiscordConfig {
-    pub fn example() -> Self {
-        Self {
-            token: "<Token>".to_string(),
-        }
-    }
+pub async fn init(config: DiscordConfig, db: Database) {
+    let intents = GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::MESSAGE_CONTENT;
+
+    // Avoid circular Arc
+    let handler = Handler {
+        db: db.clone(),
+        config: config.clone(),
+    };
+    let mut client = Client::builder(&config.token, intents)
+        .event_handler(handler)
+        .await
+        .expect("Err creating client");
+
+    //client.cache_and_http.http.get_messages(channel_id, query);
+    let http = client.cache_and_http.clone();
+    tokio::spawn(async move {
+        client.start().await.unwrap();
+    });
+
+    //TODO return http somehow
 }
 
-pub struct DiscordClient {}
-
-impl DiscordClient {
-    pub async fn connect(config: DiscordConfig) -> Result<Arc<Self>> {
-        let intents = GatewayIntents::GUILD_MESSAGES
-            | GatewayIntents::DIRECT_MESSAGES
-            | GatewayIntents::MESSAGE_CONTENT;
-
-        // Avoid circular Arc
-        let mut client = Client::builder(&config.token, intents)
-            .event_handler()
-            .await
-            .expect("Err creating client");
-
-        let client: Arc<Self> = Self {}.into();
-
-        Ok(client)
-    }
+pub struct Handler {
+    db: Database,
+    config: DiscordConfig,
 }
-
-struct Handler;
 
 #[async_trait]
-impl EventHandler for DiscordClient {
+impl EventHandler for Handler {
     // Set a handler for the `message` event - so that whenever a new message
     // is received - the closure (or function) passed will be called.
     //
@@ -65,6 +70,8 @@ impl EventHandler for DiscordClient {
             if let Err(why) = msg.channel_id.say(&ctx.http, "Pong!").await {
                 println!("Error sending message: {:?}", why);
             }
+        } else if self.process_message(msg.clone()).await {
+            println!("{} {}", msg.author.name, msg.content);
         }
     }
 
@@ -78,7 +85,65 @@ impl EventHandler for DiscordClient {
     // private channels, and more.
     //
     // In this case, just print what the current user's username is.
-    async fn ready(&self, _c: Context, ready: Ready) {
+    async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
+
+        // scan history
+        for channel in &self.config.channels {
+            let timestamp = self.db.most_recent(channel.clone()).await.unwrap();
+
+            let channel = ctx
+                .http
+                .get_channel(channel.parse().unwrap())
+                .await
+                .unwrap();
+
+            let mut stream = pin!(channel.id().messages_iter(&ctx.http));
+            while let Some(msg) = stream.next().await {
+                let msg = msg.unwrap();
+
+                let ts: DateTime<Utc> = *msg.timestamp;
+                if let Some(ts_last) = &timestamp {
+                    if ts <= *ts_last {
+                        break;
+                    }
+                }
+
+                self.process_message(msg).await;
+            }
+        }
+    }
+}
+
+impl Handler {
+    async fn process_message(&self, msg: Message) -> bool {
+        let links = crate::utils::links::extract_links(msg.content);
+        if !links.is_empty() {
+            let res = self
+                .db
+                .add_message(types::Message {
+                    id: Thing {
+                        tb: "message".to_string(),
+                        id: msg.id.to_string().into(),
+                    },
+                    sender: Thing {
+                        tb: "account".to_string(),
+                        id: msg.author.id.to_string().into(),
+                    },
+                    channel: Thing {
+                        tb: "channel".to_string(),
+                        id: msg.channel_id.to_string().into(),
+                    },
+                    date: *msg.timestamp,
+                    links,
+                })
+                .await;
+
+            res.unwrap();
+
+            true
+        } else {
+            false
+        }
     }
 }

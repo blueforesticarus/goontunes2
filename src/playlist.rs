@@ -1,4 +1,7 @@
-use crate::types::{ChannelId, Kind, Song};
+use crate::{
+    database::Database,
+    types::{ChannelId, Kind, Song},
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -20,13 +23,13 @@ struct PlaylistConfig {
 impl Default for PlaylistConfig {
     fn default() -> Self {
         Self {
-            name: "<name>".to_string(),
-            inputs: vec![PlaylistInput::All],
+            name: "".to_string(),
+            inputs: vec![],
             no_repeat: true,
             shuffle: false,
             reverse: false,
             kind: vec![Kind::Track, Kind::Album],
-            description: "<description>".to_string(),
+            description: "".to_string(),
         }
     }
 }
@@ -34,21 +37,16 @@ impl Default for PlaylistConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum PlaylistInput {
     Channel(ChannelId),
-    All,
 }
 
-struct Playlist {
-    config: PlaylistConfig,
-    tracks: Vec<Song>,   //TODO metatrack
-    date: DateTime<Utc>, //XXX should be monotonic?
+pub struct Playlist {
+    pub config: PlaylistConfig,
+    pub tracks: Vec<Song>,   //TODO metatrack
+    pub date: DateTime<Utc>, //XXX should be monotonic?
 }
 
 impl PlaylistConfig {
-    fn build() {
-        //do query
-    }
-
-    fn query() {
-        //build query
+    fn build(db: &Database) -> Playlist {
+        db.db.query("SELECT links FROM message ORDER BY date ASC");
     }
 }

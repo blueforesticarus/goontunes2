@@ -1,6 +1,6 @@
-//! calculate a playlist diff
-//! Spotify limits the # of alterations to a playlist per request. This file contains functions to take the diff between
-//! 2 track lists and intelligently sequence api requests to get from one to the other.
+//! Calculate a playlist diff and sequence changes
+//! Spotify limits the # of tracks that can be added/removed in a single api request.
+//! This file contains functions to take the diff between two track lists and generate an efficient list of api requests to get from one to the other.
 
 /* Ported from Go (eww, gross)
 func (self *ServicePlaylist) Update(p *Playlist) error {
@@ -287,8 +287,6 @@ pub enum Actions<T> {
 
 #[cfg(test)]
 mod test {
-    use std::default;
-
     use itertools::Itertools;
 
     use crate::utils::diff::SequenceOptions;
