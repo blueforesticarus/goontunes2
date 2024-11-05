@@ -3,3 +3,13 @@
 .spotify_token_cache.json
 matrix_security_key
 forks/
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+surreal_utils

@@ -1,13 +1,14 @@
 //#![allow(dead_code)]
+#![feature(associated_type_defaults)]
 
 //pub mod config;
 pub mod database;
-pub use database::types;
+//pub use database::types;
 
 pub mod config;
 //pub mod playlist;
 //pub mod traits;
-//pub mod types;
+pub mod types;
 
 pub mod utils {
     //pub mod channel;
@@ -20,7 +21,24 @@ pub mod utils {
 
 pub mod service {
     pub mod discord;
-    //pub mod matrix;
+    pub mod matrix;
     pub mod spotify;
     //pub mod youtube;
+}
+
+pub mod prelude {
+    pub use async_trait::async_trait;
+    pub use chrono::Utc;
+    pub type DateTime<U = Utc> = chrono::DateTime<U>;
+    pub use serde::{Deserialize, Serialize};
+    pub use std::fmt::Display;
+    pub use std::sync::Arc;
+    pub use url::Url;
+    pub type Result<T = (), E = eyre::Report> = std::result::Result<T, E>;
+    pub use culpa::{throw, throws};
+    pub use std::error::Error;
+
+    pub use crate::database::MyDb;
+    pub use crate::types;
+    pub use crate::utils::when_even::{Loggable, OnError};
 }

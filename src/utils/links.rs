@@ -4,21 +4,21 @@ use regex::Regex;
 
 use url::Url;
 
-use crate::types::{Link, MusicService};
+use crate::types::{music::Service, Link};
 
-pub fn extract_links(content: String) -> Vec<Link> {
+pub fn extract_links(content: &str) -> Vec<Link> {
     extract_urls(content)
         .iter()
         .filter_map(|url| parse_url(url))
         .collect_vec()
 }
 
-pub fn extract_urls(content: String) -> Vec<Url> {
+pub fn extract_urls(content: &str) -> Vec<Url> {
     let mut finder = LinkFinder::new();
     finder.url_must_have_scheme(false);
     finder.kinds(&[LinkKind::Url]);
     let links: Vec<_> = finder
-        .links(&content)
+        .links(content)
         .flat_map(|v| Url::parse(v.as_str()))
         .collect();
 
@@ -28,15 +28,14 @@ pub fn extract_urls(content: String) -> Vec<Url> {
 pub fn parse_url(url: &Url) -> Option<Link> {
     let mut entry = Link {
         url: url.clone(),
-        service: MusicService::Spotify, //dummy
+        service: Service::Spotify, //dummy
         id: Default::default(),
         kind: None,
-        target: todo!(),
     };
 
     let host = url.host_str().unwrap_or_default();
     if host.contains("youtube") || host.contains("youtu.be") {
-        entry.service = MusicService::Youtube;
+        entry.service = Service::Youtube;
 
         //https://regex101.com/r/LeZ9WH/2/
         lazy_static::lazy_static! {
@@ -54,7 +53,7 @@ pub fn parse_url(url: &Url) -> Option<Link> {
             }
         }
     } else if host.contains("spotify") {
-        entry.service = MusicService::Spotify;
+        entry.service = Service::Spotify;
 
         //https://regex101.com/r/PvfZk6/1
         lazy_static::lazy_static! {
@@ -72,7 +71,7 @@ pub fn parse_url(url: &Url) -> Option<Link> {
             }
         }
     } else if host.contains("soundcloud") {
-        entry.service = MusicService::Soundcloud;
+        entry.service = Service::Soundcloud;
         entry.id = url.path().to_string();
     } else {
         return None;
@@ -98,11 +97,10 @@ mod tests {
             https://youtu.be/2sFlFPmUfNo?t=1
             https://play.spotify.com/user/spotifydiscover/playlist/0vL3R9wDeAwmXTTuRATa14
             https://open.spotify.com/track/1TZ3z6TBztuY0TLUlJZ8R7
-        "
-        .to_string();
-
+        ";
         let urls = extract_urls(txt);
-        assert_eq!(urls.len(), 10, "{:?}", urls);
+        let lines = txt.split_ascii_whitespace().count();
+        assert_eq!(urls.len(), lines, "{:?}", urls);
 
         for url in urls {
             let link = parse_url(&url);

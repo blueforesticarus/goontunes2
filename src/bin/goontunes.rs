@@ -1,12 +1,18 @@
 use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
-use eyre::{bail, Result};
+use eyre::Result;
 use goontunes::{
     config::{Config, ServiceConfig},
     database,
-    service::discord,
+    service::{discord, matrix, spotify},
     utils::when_even::{with, WithContext},
+};
+use tracing::{info, trace, Level};
+use tracing_subscriber::{
+    filter::{self, Targets},
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -20,6 +26,9 @@ struct Cli {
     )]
     config: String,
 
+    #[clap(short, long)]
+    reset: bool,
+
     /// Enable verbose logging output.
     #[clap(short, long, action)]
     verbose: bool,
@@ -27,8 +36,6 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
 
     //TODO write pull request https://gitlab.com/ijackson/rust-shellexpand/-/issues/8
@@ -38,21 +45,36 @@ async fn main() -> Result<()> {
         .with("serde deserialize config")
         .contextualize::<eyre::Error, _>(|| {
             let txt = std::fs::read_to_string(&path)?;
-            let config: Config = serde_json::from_str(&txt)?;
+            let config: Config = toml::from_str(&txt)?;
             Ok(config)
         })?;
 
     //TODO standardize
     if cli.verbose {
-        tracing_subscriber::fmt::init();
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer())
+            .with(tracing_subscriber::EnvFilter::from_default_env())
+            //.with(Targets::new().with_target("matrix_sdk_crypto", Level::WARN))
+            .init();
+
+        info!("initialized tracing");
     }
 
-    let db = database::init().await;
+    let db = database::init(config.database).await.unwrap();
+    if cli.reset {
+        db.reset(vec!["message", "track", "album"]).await;
+    }
 
     for service in config.services {
         match service {
             ServiceConfig::Discord(c) => {
-                discord::init(c, db.clone()).await;
+                discord::Module::new(c, db.db.clone()).init().await.unwrap();
+            }
+            ServiceConfig::Matrix(c) => {
+                matrix::Module::new(c, db.db.clone()).init().await.unwrap();
+            }
+            ServiceConfig::Spotify(c) => {
+                spotify::Module::new(c, db.db.clone()).init().await.unwrap();
             }
         }
     }

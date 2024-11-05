@@ -1,10 +1,10 @@
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+// use async_trait::async_trait;
+// use chrono::{DateTime, Utc};
 
-#[async_trait]
-pub trait ChatService {
-    async fn rescan(&self, since: DateTime<Utc>);
-}
+// #[async_trait]
+// pub trait ChatService {
+//     async fn rescan(&self, since: DateTime<Utc>);
+// }
 
 /*
 #[async_trait]

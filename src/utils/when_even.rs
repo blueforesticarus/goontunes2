@@ -2,10 +2,13 @@
 //! hooks into tracing
 
 use std::{
+    backtrace::Backtrace,
     error::Error,
     fmt::{Debug, Display},
     path::{Path, PathBuf},
 };
+
+use tracing::error;
 
 pub trait Ignoreable: Sized {
     fn ignore(self) {}
@@ -17,11 +20,11 @@ pub trait Logger<T: ?Sized> {
 }
 
 pub struct OnError;
-impl<T, E: Display> Logger<Result<T, E>> for OnError {
+impl<T, E: Debug> Logger<Result<T, E>> for OnError {
     fn log(value: &Result<T, E>) {
         match value {
             Ok(_) => {}
-            Err(e) => println!("{}", e),
+            Err(e) => error!("{:?}, {}", e, Backtrace::capture()),
         }
     }
 }
