@@ -3,9 +3,11 @@ use std::{
     sync::Arc,
 };
 
+use async_condvar_fair::Condvar;
 use culpa::{throw, throws};
 use deadqueue::unlimited::Queue;
 use eyre::Error;
+use parking_lot::Mutex;
 use rspotify::{
     clients::BaseClient,
     model::{album, AlbumId, FullAlbum, FullPlaylist, FullTrack, Page, PlaylistId, TrackId},
@@ -44,8 +46,8 @@ struct Req<ID, V> {
 }
 
 pub struct Fetcher {
-    album_q: Queue<Req<AlbumId<'static>, FullAlbum>>,
-    track_q: Queue<Req<TrackId<'static>, FullTrack>>,
+    album_q: Vec<Req<AlbumId<'static>, FullAlbum>>,
+    track_q: Vec<Req<TrackId<'static>, FullTrack>>,
     connections: tokio::sync::Semaphore,
 }
 
@@ -66,6 +68,7 @@ impl super::Module {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         // PROBLEM needs caching and such
+
         self.fetcher.album_q.push(Req { id, tx });
         let mut album = rx.await?;
         self.depageinate_album(&mut album).await?;
@@ -149,16 +152,6 @@ impl super::Module {
     #[instrument(err, skip(self))]
     async fn consume_album_q(&self) {
         let _guard = self.fetcher.connections.acquire();
-
-        // get max 20 albums
-        let mut ls = vec![self.fetcher.album_q.pop().await];
-        while let Some(v) = self.fetcher.album_q.try_pop() {
-            ls.push(v);
-            if ls.len() >= 20 {
-                break;
-            }
-        }
-
         let mut ls: HashMap<_, _> = ls.into_iter().map(|rq| (rq.id, rq.tx)).collect();
 
         let mut albums = self.client().albums(ls.keys().cloned(), None).await?;
@@ -230,4 +223,10 @@ impl super::Module {
 
         Ok(())
     }
+}
+
+
+struct<T> Latch<T> {
+    data: Mutex<T>,
+    condvar: Condvar,
 }

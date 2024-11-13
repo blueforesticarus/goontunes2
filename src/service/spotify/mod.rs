@@ -1,11 +1,25 @@
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicI32, Arc, OnceLock},
+};
 
-use rspotify::AuthCodeSpotify;
-
-use crate::prelude::MyDb;
+use culpa::throws;
+use itertools::Itertools;
+use kameo::{
+    actor::{self, ActorRef},
+    error::BoxError,
+    request::MessageSend,
+};
+use parking_lot::{Mutex, RwLock};
+use rspotify::{
+    model::{AlbumId, FullAlbum, FullPlaylist, FullTrack, TrackId},
+    prelude::BaseClient,
+    AuthCodeSpotify,
+};
+use tokio::sync::Semaphore;
 
 mod db;
-mod fetcher;
+//mod fetcher;
 mod init;
 
 //TODO error on empty string
@@ -18,26 +32,151 @@ pub struct Config {
     pub token_cache_path: String,
 }
 
-pub struct Module {
+struct Actor {
     pub config: Config,
     pub client: OnceLock<AuthCodeSpotify>,
-    pub db: MyDb,
-    pub fetcher: fetcher::Fetcher,
+
+    pub album_q: Arc<Queue<AlbumId<'static>>>,
+    pub track_q: Vec<TrackId<'static>>,
+
+    pub connections: Arc<tokio::sync::Semaphore>,
 }
 
-impl Module {
-    pub fn new(config: Config, db: MyDb) -> Arc<Self> {
-        Self {
-            config,
-            db,
-            client: OnceLock::new(),
-            fetcher: Default::default(),
-        }
-        .into()
+impl kameo::Actor for Actor {
+    type Mailbox = kameo::mailbox::unbounded::UnboundedMailbox<Self>;
+
+    #[throws(BoxError)]
+    async fn on_start(&mut self, actor_ref: ActorRef<Self>) {
+        let client = init::connect(&self.config).await?;
+        self.client.set(client).expect("should be unset");
+
+        let q = self.album_q.clone();
+        let client = self.client.get().unwrap().clone();
+        let conns = self.connections.clone();
+
+        tokio::spawn(async move {
+            loop {
+                {
+                    let guard = q.data.read();
+                    if guard.is_empty() {
+                        q.condvar.wait_no_relock(guard);
+                        continue;
+                    }
+                }
+
+                let _conn = conns.acquire().await;
+
+                let ids = {
+                    let guard = q.data.read();
+                    guard.iter().take(20).cloned().collect_vec()
+                };
+
+                let albums = client.albums(ids, None).await.unwrap();
+                let data = albums
+                    .into_iter()
+                    .map(|a| (SpotifyThing::Album(a), ()))
+                    .collect_vec();
+
+                actor_ref.tell(FetcherData { data }).send().await;
+            }
+        });
     }
 
-    pub fn client(&self) -> &rspotify::AuthCodeSpotify {
-        self.client.get().expect("spotify not initialized")
+    // Implement other lifecycle hooks as needed...
+}
+
+#[derive(kameo::Actor)]
+struct BatchFetcher {
+    q: Vec<String>,
+    conn: Arc<Semaphore>,
+    current: i32,
+}
+
+// #[kameo::messages]
+// impl BatchFetcher {
+//     #[message]
+//     pub async fn batch_add(&mut self, b: Vec<String>) {
+//         self.q.extend(b.into_iter());
+//         if todo!(){
+//         _   ctx.actor_ref().tell(Spawn {}).send().await;
+//         }
+//     }
+
+//     #[message]
+//     pub async fn spawn(&mut self, actor_ref: ActorRef<Actor>) {
+//         let _conn = if self.current < 1 && self.q.len() > 1 {
+//             match self.conn.try_acquire() {
+//                 Ok(v) => v,
+//                 _ => return,
+//             }
+//         } else if self.q.len() >= 20 {
+//             self.conn.acquire().await.unwrap()
+//         } else {
+//             return;
+//         };
+
+//         tokio::spawn(future)
+//     }
+// }
+
+/// Data from the fetcher
+type Metadata = ();
+enum SpotifyThing {
+    Album(FullAlbum),
+    Track(FullTrack),
+    Playlist(FullPlaylist),
+}
+
+struct Queue<T> {
+    data: RwLock<VecDeque<T>>,
+    condvar: async_condvar_fair::Condvar,
+}
+
+#[kameo::messages]
+impl Actor {
+    /// get data back from fetcher
+    #[message]
+    pub fn fetcher_data(&mut self, data: Vec<(SpotifyThing, Metadata)>) {}
+
+    #[message]
+    pub fn fetch_album(&mut self, ids: Vec<String>) {
+        let mut guard = self.album_q.data.write();
+        let current = guard.iter().map(|a| a.clone()).collect_vec();
+
+        let mut filtered = ids
+            .into_iter()
+            .map(|s| AlbumId::from_id_or_uri(&s).unwrap().clone_static())
+            .filter(|id| current.contains(id))
+            .peekable();
+
+        if filtered.peek().is_some() {
+            self.album_q.condvar.notify_all();
+            guard.extend(filtered);
+        }
+    }
+
+    #[message]
+    pub fn fetch_track(&mut self, ids: Vec<String>) {
+        todo!();
+    }
+
+    #[message]
+    pub fn task(&mut self, actor_ref: ActorRef<Actor>) {
+        // if self.album_q.is_empty() {
+        //     tokio::spawn(async { todo!() });
+        // } else {
+        //     let client = self.client.get().unwrap().clone();
+        //     let ids = self.album_q.iter().take(20).cloned().collect_vec();
+        //     tokio::spawn(async move {
+        //         let albums = client.albums(ids, None).await.unwrap();
+        //         let data = albums
+        //             .into_iter()
+        //             .map(|a| (SpotifyThing::Album(a), ()))
+        //             .collect_vec();
+        //         actor_ref.tell(FetcherData { data }).send().await;
+        //         actor_ref.tell(Task).send().await;
+        //     });
+        // }
     }
 }
 

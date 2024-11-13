@@ -6,20 +6,21 @@ use std::{
 use culpa::throws;
 use eyre::Error;
 use futures::lock::Mutex;
-use postage::sink::Sink;
-use rustyline_async::ReadlineEvent;
+use postage::{sink::Sink, stream::Stream};
+use rustyline_async::{Readline, ReadlineEvent};
 use serde::{Deserialize, Serialize};
 use surrealdb::{
     engine::any::{connect, Any},
     opt::auth::Root,
     sql::Table,
-    Notification, RecordId, Surreal,
+    Action, Notification, RecordId, Surreal,
 };
 use tracing::info;
 
 use crate::{
     types::{chat::Message, Link},
     utils::{
+        links::extract_links,
         synctron::Synctron,
         when_even::{Loggable, OnError},
     },
@@ -41,10 +42,40 @@ pub struct Auth {
 }
 
 #[derive(Debug, Clone)]
+pub struct Gossip<T> {
+    pub tx: postage::broadcast::Sender<T>,
+}
+
+impl<T: Clone> Default for Gossip<T> {
+    fn default() -> Self {
+        let (tx, _) = postage::broadcast::channel(100);
+        Self { tx }
+    }
+}
+
+impl<T: Clone> Gossip<T> {
+    pub async fn publish(&self, v: T) {
+        self.tx.clone().send(v).await;
+    }
+
+    pub async fn subscribe(&self) -> impl Stream<Item = T> {
+        self.tx.subscribe()
+    }
+
+    pub async fn listen(&self, f: impl Fn(T)) {
+        let mut a = self.tx.subscribe();
+        loop {
+            let r = a.recv().await.unwrap();
+            f(r);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Database {
     pub db: MyDb,
-    // sync
-    // TODO MAINTAIN CACHE
+
+    pub links: Gossip<Link>,
 }
 
 pub async fn init(config: Config) -> eyre::Result<Database> {
@@ -61,9 +92,10 @@ pub async fn init(config: Config) -> eyre::Result<Database> {
     }
 
     db.use_ns("default").use_db("default").await.unwrap();
-    let d = Database { db: db.into() };
-
-    d.link_task().await;
+    let d = Database {
+        db: db.into(),
+        links: Default::default(),
+    };
 
     Ok(d)
 }
@@ -78,10 +110,6 @@ impl Database {
                 .await;
             //dbg!(res);
         }
-    }
-
-    pub async fn cmd_loop(&self) {
-        use rustyline_async::Readline;
         use std::io::Write;
         let (mut rl, mut writer) = Readline::new(">> ".into()).unwrap();
         // if rl.load_history("history.txt").is_err() {
@@ -119,33 +147,6 @@ impl Database {
         // rl.save_history("history.txt");
     }
 
-    pub async fn link_task(&self) -> eyre::Result<()> {
-        use futures::stream::StreamExt;
-        let surreal = self.db.clone();
-        tokio::spawn(async move {
-            let mut stream = surreal
-                .as_ref()
-                .select("message")
-                .live()
-                .await
-                .log::<OnError>()?;
-            while let Some(result) = stream.next().await {
-                handle(result);
-            }
-            Ok::<(), eyre::Report>(())
-        });
-        Ok(())
-    }
-
-    #[throws]
-    pub async fn message_without_link(db: &MyDb) -> Vec<MessageBundle> {
-        let ret: Vec<MessageBundle> = db
-            .query("SELECT * FROM message WHERE link AND !->link")
-            .await?
-            .take(0)?;
-        ret
-    }
-
     #[throws]
     pub async fn update_link_edge(db: &MyDb, msg: RecordId, target: RecordId) {
         let query = "CREATE target; RELATE $msg->link->$target";
@@ -155,47 +156,3 @@ impl Database {
             .await?;
     }
 }
-
-#[derive(Debug, Serialize, Deserialize)]
-struct MessageBundle {
-    id: RecordId,
-    message: Message,
-}
-
-fn handle(result: surrealdb::Result<Notification<MessageBundle>>) {
-    match result {
-        Ok(notification) => println!("{notification:?}"),
-        Err(error) => eprintln!("{error}"),
-    }
-}
-
-// #[cfg(test)]
-// mod tests {
-//     use super::Database;
-
-//     async fn test_db() -> Database {
-//         Database::init().await
-//     }
-// }
-
-// usefull function for more than one id field
-// combine with indexes for performance
-//
-// DEFINE FUNCTION fn::existential(
-//     $table: string,
-//     $index: string,
-//     $value: any,
-// ) {
-// 	LET $id = SELECT
-//         VALUE id
-//         FROM type::table($table)
-//         WHERE type::field($index) = $value;
-
-//     return IF $id = [] THEN
-//         return (
-//             CREATE type::table($table) CONTENT object::from_entries([[$index, $value]])
-//         ).id;
-//     else
-//         return $id;
-//     end;
-// };
