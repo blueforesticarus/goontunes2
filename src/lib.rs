@@ -1,5 +1,7 @@
 //#![allow(dead_code)]
 #![feature(associated_type_defaults)]
+#![feature(try_blocks)]
+#![feature(extract_if)]
 
 //pub mod config;
 pub mod database;

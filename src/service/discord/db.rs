@@ -2,7 +2,6 @@ use crate::types::chat::*;
 use crate::utils::links::extract_links;
 use crate::{prelude::*, service::discord::convert::ToSurreal};
 
-use bevy_ecs::system::Resource;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serenity::model::prelude as discord;

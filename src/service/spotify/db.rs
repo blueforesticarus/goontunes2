@@ -1,4 +1,3 @@
-use bevy_ecs::bundle::Bundle;
 use eyre::ContextCompat;
 use surrealdb::{
     opt::IntoQuery,

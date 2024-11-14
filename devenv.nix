@@ -3,6 +3,7 @@
 {
   # https://devenv.sh/basics/
   env.GREET = "(rust devenv)";
+  env.LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
   languages.rust = {
     enable = true;
@@ -27,4 +28,8 @@
     sqlite # for matrix_rust_sdk
     sqlite.dev
   ];
+
+  enterShell = ''
+    unset CFLAGS
+  '';
 }
