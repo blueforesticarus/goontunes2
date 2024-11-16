@@ -3,11 +3,15 @@ use std::{path::PathBuf, time::Duration};
 use clap::Parser;
 use eyre::Result;
 use goontunes::{
-    config::{Config, ServiceConfig},
+    config::{AppConfig, ConfigCli},
     database,
-    service::{discord, matrix, spotify},
+    service::{
+        self, discord, matrix,
+        spotify::{self, FetchPlaylist, FetchThing},
+    },
     utils::when_even::{with, WithContext},
 };
+use kameo::request::MessageSend;
 use tracing::{info, trace, Level};
 use tracing_subscriber::{
     filter::{self, Targets},
@@ -17,14 +21,8 @@ use tracing_subscriber::{
 
 #[derive(Debug, Clone, Parser)]
 struct Cli {
-    /// The homeserver to connect to.
-    #[clap(
-        short,
-        long,
-        env = "GOONTUNES_CONFIG",
-        default_value = "~/.config/goontunes"
-    )]
-    config: String,
+    #[command(flatten)]
+    config: ConfigCli,
 
     #[clap(short, long)]
     reset: bool,
@@ -32,6 +30,10 @@ struct Cli {
     /// Enable verbose logging output.
     #[clap(short, long, action)]
     verbose: bool,
+
+    /// Enable verbose logging output.
+    #[clap(long, action)]
+    venator: bool,
 }
 
 #[tokio::main]
@@ -39,15 +41,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     //TODO write pull request https://gitlab.com/ijackson/rust-shellexpand/-/issues/8
-    let path: PathBuf = shellexpand::path::tilde(&cli.config).into();
+    let path: PathBuf = shellexpand::path::tilde(&cli.config.config_path).into();
 
-    let config = with(&path)
-        .with("serde deserialize config")
-        .contextualize::<eyre::Error, _>(|| {
-            let txt = std::fs::read_to_string(&path)?;
-            let config: Config = toml::from_str(&txt)?;
-            Ok(config)
-        })?;
+    let config = goontunes::config::load(cli.config).unwrap();
 
     //TODO standardize
     if cli.verbose {
@@ -59,27 +55,25 @@ async fn main() -> Result<()> {
 
         info!("initialized tracing");
     }
-
-    let db = database::init(config.database).await.unwrap();
-    if cli.reset {
-        db.reset(vec!["message", "track", "album"]).await;
+    if cli.venator {
+        // venator::Venator::default().install()
     }
 
-    for service in config.services {
-        match service {
-            ServiceConfig::Discord(c) => {
-                discord::Module::new(c, db.db.clone()).init().await.unwrap();
-            }
-            ServiceConfig::Matrix(c) => {
-                matrix::Module::new(c, db.db.clone()).init().await.unwrap();
-            }
-            ServiceConfig::Spotify(c) => {
-                spotify::Module::new(c, db.db.clone()).init().await.unwrap();
+    // let db = database::init(config.database).await.unwrap();
+    // if cli.reset {
+    //     db.reset(vec!["message", "track", "album"]).await;
+    // }
+
+    if let Some(conf) = config.spotify {
+        let actor_ref = kameo::spawn(service::spotify::Actor::new(conf));
+        for pl in config.playlists {
+            if let Some(id) = pl.id {
+                dbg!(&id);
+                let _ = actor_ref.tell(FetchPlaylist { id }).send().await.unwrap();
             }
         }
     }
 
-    //db.cmd_loop().await;
     tokio::time::sleep(Duration::MAX).await;
 
     Ok(())

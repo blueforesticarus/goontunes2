@@ -5,13 +5,14 @@ use crate::prelude::*;
 use rspotify::{clients::OAuthClient, scopes, AuthCodeSpotify, Credentials, OAuth};
 
 #[throws(eyre::Error)]
+#[tracing::instrument(skip_all)]
 pub async fn connect(config: &super::Config) -> AuthCodeSpotify {
     let client = {
         let creds = Credentials::new(&config.id, &config.secret);
         let oauth = OAuth {
             redirect_uri: config.redirect_url.clone(),
             scopes: scopes!(
-                "user-read- back-position",
+                "user-read-playback-position",
                 "playlist-read-collaborative",
                 "playlist-read-private",
                 "user-follow-modify",
@@ -47,8 +48,7 @@ pub async fn connect(config: &super::Config) -> AuthCodeSpotify {
         /* Test connection */
         let guard = client.token.lock().await.unwrap();
         let token = guard.as_ref().unwrap();
-        tracing::info!(access_token = token.access_token);
-        tracing::info!(refresh_token = token.access_token);
+        tracing::info!(token = token.access_token);
         drop(guard); // Or else next request hangs
 
         let user = client.current_user().await.unwrap();

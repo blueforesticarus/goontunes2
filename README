@@ -2,3 +2,39 @@
 
 # TODO
 send typing notice when bot is building playlist or scanning
+
+# Observations
+I should have left this shit in python.
+
+Channels suck, they are cumbersome to instantiate and use, have ideosyncratic restrictions, and come in many many versions, with no good rules of thumb for which to use.
+
+They break multible rules of software
+- Every decision should be meaningful (picking a random channel when you don't care about which type you want)
+- The right way should be the easiest way (message passing with channels is much more cumbersome than mutexs and shared state)
+- The amount of code should reflect the amount of thought. (channels and methods are both message passing, channels are easily 10x more code.)
+
+( Software is a user interface and rust's is clunky and non-human. 
+The correct measure of a language is whether you can prototype something in an hour and add a feature in 5 minutes. 
+The target user of a programming language is the solo developer on a personal project -- prioratize anything else and you belong in jail -- and your project scrubbed from existance. )
+
+Rule: push things that suck to the outermost layer of code. (like I did in the go version)
+Con: may reduce modularity. (future concern, and I could just given each service module it's own high level layer, if I wanted to do that).
+
+Impl:
+- keep all db stuff in a seperate layer 
+- `Option<impl Stream>` for all messages in the initializer
+- Item=Vec for anything that can be batch processed
+  - tricky if you multiplex the messages with an enum
+  - can write a trait which makes this easier 
+- stream not stored in the struct, only in the function which consumes it.
+  - need to use function/task context as the conceptual unit
+- no Arc on the actor struct, we want &mut methods 
+  - this means that there can't be any other refs...
+
+
+## Why do I hate this?
+I like to think of modules as autonomous actors, with methods as their interface. This does not work well in async rust, because you end up either wrapping everything in Arc Mutex inside the struct, or wrapping the struct in Arc Mutex everywhere, and other annoyances. You also end up with circular references almost immediately, every fucking time. 
+
+## new idea
+use actors
+less awful, but still awful -- but it's fixable

@@ -80,12 +80,12 @@ impl Module {
                 Ok(_) => {}
                 Err(e) => {
                     let msg = RoomMessageEventContent::text_plain(e.to_string());
-                    room.send(msg).await.log_and_drop::<OnError>();
+                    room.send(msg).await.log_and_drop::<Bug>();
                 }
             },
             Err(e) => {
                 let msg = RoomMessageEventContent::text_plain(e.render().to_string());
-                room.send(msg).await.log_and_drop::<OnError>();
+                room.send(msg).await.log_and_drop::<Bug>();
             }
         }
 
@@ -141,11 +141,11 @@ impl Module {
             }
             MatrixCommands::Leave { channel } => {
                 let target: Room = get_room(channel)?;
-                target.leave().await.log_and_drop::<OnError>()
+                target.leave().await.log_and_drop::<Bug>()
             }
             MatrixCommands::Join { channel } => {
                 let target: Room = get_room(channel)?;
-                target.join().await.log_and_drop::<OnError>();
+                target.join().await.log_and_drop::<Bug>();
             }
         }
     }

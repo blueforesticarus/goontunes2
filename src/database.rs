@@ -22,7 +22,7 @@ use crate::{
     utils::{
         links::extract_links,
         synctron::Synctron,
-        when_even::{Loggable, OnError},
+        when_even::{Loggable, Bug},
     },
 };
 

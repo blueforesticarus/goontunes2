@@ -63,7 +63,7 @@ impl RoomAncestry {
                     client
                         .join_room_by_id(&unjoined_room)
                         .await
-                        .log_and_drop::<OnError>();
+                        .log_and_drop::<Bug>();
 
                     // loop untill there are no unjoined rooms which we haven't tried to join.
                     // joining a room may cause new room to show up in ancestry
@@ -101,7 +101,7 @@ impl RoomAncestry {
         let mut current = room.clone();
         while let Some(roomid) = get_previous(current)
             .await
-            .log::<OnError>()
+            .log::<Bug>()
             .unwrap_or_default()
         {
             match client.get_room(&roomid) {

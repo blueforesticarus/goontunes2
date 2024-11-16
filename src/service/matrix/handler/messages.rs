@@ -23,11 +23,11 @@ pub async fn on_room_message(
             client
                 .process_maybe_command(&event, &room)
                 .await
-                .log_and_drop::<OnError>();
+                .log_and_drop::<Bug>();
             client
                 .process_message(&event, &room)
                 .await
-                .log_and_drop::<OnError>();
+                .log_and_drop::<Bug>();
         }
         other => {
             dbg!(other);
@@ -40,5 +40,5 @@ pub async fn on_reaction(event: OriginalSyncReactionEvent, room: Room, client: C
     client
         .process_reaction(&event, &room)
         .await
-        .log_and_drop::<OnError>();
+        .log_and_drop::<Bug>();
 }

@@ -49,7 +49,7 @@ async fn wait_for_confirmation(sas: SasVerification, emoji: [Emoji; 7]) {
     //     _ => sas.cancel().await.unwrap(),
     // }
 
-    sas.confirm().await.log_and_drop::<OnError>()
+    sas.confirm().await.log_and_drop::<Bug>()
 }
 
 async fn print_devices(user_id: &UserId, client: &Client) {
@@ -167,7 +167,7 @@ pub fn install_verification_handlers(client: &Client) {
                 .get_verification_request(&ev.sender, &ev.content.transaction_id)
                 .await
                 .context("Request object wasn't created")
-                .log::<OnError>();
+                .log::<Bug>();
 
             if let Ok(request) = request {
                 tokio::spawn(request_verification_handler(client, request));

@@ -1,16 +1,19 @@
 use std::{
     cell::OnceCell,
     collections::{HashSet, VecDeque},
+    fmt::Debug,
+    hash::Hash,
     ops::Deref,
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU64},
+        atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU64, AtomicUsize},
         Arc, OnceLock,
     },
     time::Duration,
 };
 
 use culpa::throws;
-use fetcher::depageinate_album;
+use eyre::bail;
+use fetcher::{depageinate_album, depageinate_playlist, depageinate_playlist_fast};
 use futures::future::join_all;
 use itertools::Itertools;
 use kameo::{
@@ -21,20 +24,37 @@ use kameo::{
 use parking_lot::{Mutex, RwLock};
 use rspotify::{
     http::HttpError,
-    model::{album, AlbumId, FullAlbum, FullPlaylist, FullTrack, TrackId},
+    model::{
+        album, parse_uri, track, AlbumId, FullAlbum, FullPlaylist, FullTrack, Id, PlayableItem,
+        PlaylistId, PlaylistTracksRef, TrackId, Type,
+    },
     prelude::BaseClient,
     AuthCodeSpotify, ClientError, ClientResult,
 };
+use serenity::model::id;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     time::Instant,
 };
+use tracing::{info, instrument};
 
-use crate::prelude::{Loggable, OnError};
+use crate::{
+    prelude::{Bug, Loggable},
+    utils::when_even::OnError,
+};
 
 mod db;
 mod fetcher;
 mod init;
+
+const MAX_ALBUMS: usize = 20;
+const MAX_TRACKS: usize = 100;
+
+pub enum ReqTypes {
+    Album,
+    Track,
+    Playlist,
+}
 
 //TODO error on empty string
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -46,7 +66,7 @@ pub struct Config {
     pub token_cache_path: String,
 }
 
-struct Actor {
+pub struct Actor {
     pub config: Config,
     pub client: Init<AuthCodeSpotify>,
     pub this: Init<ActorRef<Actor>>,
@@ -56,69 +76,367 @@ struct Actor {
 
     pub ratelimiter: RateLimiter,
 
-    pub trigger: TriggerTask<Task, Self>,
+    pub trigger: Init<TriggerTask<Task, Self>>,
+}
+
+impl Actor {
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            client: Default::default(),
+            this: Default::default(),
+            album_q: Default::default(),
+            track_q: Default::default(),
+            ratelimiter: Default::default(),
+            trigger: Default::default(),
+        }
+    }
 }
 
 impl kameo::Actor for Actor {
     type Mailbox = kameo::mailbox::unbounded::UnboundedMailbox<Self>;
 
     #[throws(BoxError)]
+    #[instrument(skip_all, err)]
     async fn on_start(&mut self, actor_ref: ActorRef<Self>) {
+        // TODO there should be a pre start method allowing the creation of the Actor to be defered to after the creation of the ActorRef
+
         let client = init::connect(&self.config).await?;
         self.client.set(client);
-
-        let q = self.album_q.clone();
-        let client = self.client.get().clone();
-
-        tokio::spawn(async move {
-            loop {
-                let req = unique_id();
-                let ids = q.wait_unclaimed(req, 1, 2);
-
-                //self.spawn_album_task(c);
-            }
+        self.this.set(actor_ref.clone());
+        self.trigger.set(TriggerTask {
+            trigger: Default::default(),
+            task: Task,
+            actor_ref,
         });
+        tracing::info!("SPOTIFY LOADED");
+
+        // let q = self.album_q.clone();
+        // let base = self.new_request(None);
+
+        // tokio::spawn(async move {
+        //     loop {
+        //         let mut conn = base.new(None);
+        //         let mut ids = q.wait_unclaimed(conn.reqid, 1, 20).await;
+        //         conn.acquire().await; // get permit
+        //         ids.extend(
+        //             q.take_unclaimed(conn.reqid, 0, 20 - ids.len())
+        //                 .unwrap_or_default(),
+        //         );
+        //         conn.albums(ids).await;
+        //     }
+        // });
     }
 
     // Implement other lifecycle hooks as needed...
 }
 
-#[derive(kameo::Actor)]
-struct BatchFetcher {
-    q: Vec<String>,
-    conn: Arc<Semaphore>,
-    current: i32,
+#[kameo::messages]
+impl Actor {
+    #[message]
+    pub fn fetch_thing(&mut self, id: String) {
+        match parse_uri(&id).unwrap().0 {
+            Type::Album => {
+                self.fetch_album(vec![id]);
+            }
+            Type::Track => {
+                self.fetch_track(vec![id]);
+            }
+            Type::Playlist => {
+                self.fetch_playlist(id);
+            }
+            _ => todo!(),
+        }
+    }
+
+    #[message]
+    pub fn fetch_album(&mut self, ids: Vec<String>) {
+        let ids = ids
+            .into_iter()
+            .map(|s| AlbumId::from_id_or_uri(&s).unwrap().clone_static());
+
+        self.album_q.add_unique(ids);
+        self.trigger.trigger_task();
+    }
+
+    #[message]
+    pub fn fetch_track(&mut self, ids: Vec<String>) {
+        let ids = ids
+            .into_iter()
+            .map(|s| TrackId::from_id_or_uri(&s).unwrap().clone_static());
+
+        self.track_q.add_unique(ids);
+        self.trigger.trigger_task();
+    }
+
+    #[message]
+    pub fn fetch_playlist(&mut self, id: String) {
+        // TODO may still want a request queue, so that we can decide priority
+        dbg!(); // TODO what to log here? (universal log adaptor for actors??)
+        let id = PlaylistId::from_id_or_uri(&id).unwrap().clone_static();
+        tokio::spawn(self.new_request(None).playlist(id, None));
+    }
+
+    #[message(derive(Clone))]
+    pub fn task(&mut self) {
+        self.trigger.reset();
+        while let Ok(c) = self.ratelimiter.connections.clone().try_acquire_owned() {
+            // ALLOCATE A NEW CONNECTION
+            match self.priotity() {
+                Some(ReqTypes::Album) => {
+                    let conn = self.new_request(Some(c));
+                    let ids = self
+                        .album_q
+                        .take_unclaimed(conn.reqid, 1, MAX_ALBUMS)
+                        .expect("priority wrong, nothing else should touch this");
+                    tokio::spawn(conn.albums(ids));
+                }
+                Some(ReqTypes::Track) => {
+                    let conn = self.new_request(Some(c));
+                    let ids = self
+                        .track_q
+                        .take_unclaimed(conn.reqid, 1, MAX_TRACKS)
+                        .expect("priority wrong, nothing else should touch this");
+                    tokio::spawn(conn.tracks(ids));
+                }
+                None => {
+                    tracing::info!("Idle");
+                    break;
+                }
+                _ => {
+                    todo!();
+                }
+            };
+        }
+    }
+
+    pub fn priotity(&mut self) -> Option<ReqTypes> {
+        // With this method how to prioritize?
+        // reserve one connection for each request type
+        // then prioritze playlists
+        // then prioritze full batches
+        // then prioritze
+        if self.album_q.ready() > 0 {
+            return Some(ReqTypes::Album);
+        }
+        if self.track_q.ready() > 0 {
+            return Some(ReqTypes::Track);
+        }
+        None
+    }
+
+    /// get data back from fetcher
+    #[message]
+    async fn fetcher_data(&mut self, data: Vec<SpotifyThing>, reqid: Option<u64>) {
+        // TODO handle missing tracks
+        if let Some(reqid) = reqid {
+            self.album_q.remove(reqid);
+            self.track_q.remove(reqid); //XXX fixme
+        }
+        self.trigger.trigger_task();
+
+        // TODO do something with the data
+        for d in data {
+            match d {
+                SpotifyThing::Album(full_album) => {
+                    tracing::info!(name = &full_album.name);
+                }
+                SpotifyThing::Track(full_track) => {
+                    tracing::info!(name = &full_track.name);
+                }
+                SpotifyThing::Playlist(full_playlist) => {
+                    tracing::info!(name = &full_playlist.name);
+                    let mut v = Vec::new();
+                    for track in full_playlist.tracks.items {
+                        let Some(track) = track.track else { continue };
+                        let PlayableItem::Track(track) = track else {
+                            continue;
+                        };
+                        let id = track.album.id.unwrap();
+                        v.push(id.to_string());
+                    }
+                    self.fetch_album(v);
+                }
+            }
+        }
+    }
+
+    /// get data back from fetcher
+    #[message]
+    fn fetcher_err(&mut self, err: ClientError, reqid: u64) {
+        // TODO pass more request info, like kind
+        match RateLimit::get(&err) {
+            Some(rl) => {
+                dbg!();
+                self.album_q.release(reqid);
+                self.track_q.release(reqid);
+            }
+            None => {
+                tracing::error!("{}", err);
+                self.album_q.remove(reqid);
+                self.track_q.remove(reqid);
+            }
+        }
+        self.trigger.trigger_task();
+    }
+
+    fn new_request(&self, c: Option<OwnedSemaphorePermit>) -> Conn {
+        Conn {
+            actor_ref: self.this.get().clone(),
+            client: self.client.get().clone(),
+            ratelimiter: self.ratelimiter.clone(),
+            reqid: unique_id(),
+            c,
+        }
+    }
 }
 
-// #[kameo::messages]
-// impl BatchFetcher {
-//     #[message]
-//     pub async fn batch_add(&mut self, b: Vec<String>) {
-//         self.q.extend(b.into_iter());
-//         if todo!(){
-//            _ctx.actor_ref().tell(Spawn {}).send().await;
-//         }
-//     }
+struct Conn {
+    actor_ref: ActorRef<Actor>,
+    client: AuthCodeSpotify,
+    ratelimiter: RateLimiter,
+    reqid: u64,
+    c: Option<OwnedSemaphorePermit>,
+}
 
-//     #[message]
-//     pub async fn spawn(&mut self, actor_ref: ActorRef<Actor>) {
-//         let _conn = if self.current < 1 && self.q.len() > 1 {
-//             match self.conn.try_acquire() {
-//                 Ok(v) => v,
-//                 _ => return,
-//             }
-//         } else if self.q.len() >= 20 {
-//             self.conn.acquire().await.unwrap()
-//         } else {
-//             return;
-//         };
+impl Conn {
+    #[tracing::instrument(skip_all)]
+    async fn albums(mut self, ids: Vec<AlbumId<'static>>) {
+        tracing::info!(count = ids.len());
+        self.acquire().await;
 
-//         //tokio::spawn(future)
-//     }
-// }
+        // TODO actually albums should cancel on rate limit.
+        let mut albums = self
+            .ratelimiter
+            .with_rate_limit(
+                || self.client.albums(ids.clone(), None),
+                ids.len() == MAX_ALBUMS, //XXX moveme, abort on rate limit if this is a partial batch
+            )
+            .await
+            .unwrap();
+        self.c = None; // drop lease
+
+        // depaginate tracks
+        {
+            // Really this should get splintered off into seperate sub connections
+            for a in albums.iter_mut() {
+                if a.tracks.total as usize > a.tracks.items.len() {
+                    depageinate_album(&self.client, &self.ratelimiter, a)
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+
+        let data = albums
+            .into_iter()
+            .map(|a| SpotifyThing::Album(a))
+            .collect_vec();
+
+        self.return_data(data).await;
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn tracks(mut self, ids: Vec<TrackId<'static>>) {
+        tracing::info!(count = ids.len());
+        self.acquire().await;
+        let tracks = self
+            .ratelimiter
+            .with_rate_limit(
+                || self.client.tracks(ids.clone(), None),
+                ids.len() == MAX_TRACKS,
+            )
+            .await
+            .unwrap();
+        self.c = None; // drop lease
+
+        let data = tracks
+            .into_iter()
+            .map(|t| SpotifyThing::Track(t))
+            .collect_vec();
+
+        self.return_data(data).await;
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn playlist(mut self, id: PlaylistId<'static>, snapshot: Option<String>) {
+        self.acquire().await;
+        let mut pl = self
+            .ratelimiter
+            .with_rate_limit(|| self.client.playlist(id.clone(), None, None), true)
+            .await
+            .unwrap();
+        self.c = None; // drop lease
+
+        if snapshot.as_ref() != Some(&pl.snapshot_id)
+            && pl.tracks.total as usize > pl.tracks.items.len()
+        {
+            depageinate_playlist_fast(&self.client, &self.ratelimiter, &mut pl)
+                .await
+                .unwrap();
+        }
+
+        let data = SpotifyThing::Playlist(pl);
+        self.return_data(vec![data]).await;
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn playlist_sync(
+        mut self,
+        id: PlaylistId<'static>,
+        snapshot: Option<String>,
+        tracks: Vec<PlayableItem>,
+    ) {
+    }
+
+    async fn acquire(&mut self) {
+        if self.c.is_none() {
+            let c = self
+                .ratelimiter
+                .connections
+                .clone()
+                .acquire_owned()
+                .await
+                .unwrap();
+            self.c = Some(c);
+        }
+        assert!(self.c.is_some());
+    }
+
+    async fn return_data(self, data: Vec<SpotifyThing>) {
+        self.actor_ref
+            .tell(FetcherData {
+                data,
+                reqid: Some(self.reqid),
+            })
+            .send()
+            .await
+            .unwrap();
+    }
+
+    async fn send_error(self, err: ClientError) {
+        self.actor_ref
+            .tell(FetcherErr {
+                err,
+                reqid: self.reqid,
+            })
+            .send()
+            .await
+            .unwrap();
+    }
+
+    fn new(&self, c: Option<OwnedSemaphorePermit>) -> Conn {
+        Self {
+            actor_ref: self.actor_ref.clone(),
+            client: self.client.clone(),
+            ratelimiter: self.ratelimiter.clone(),
+            reqid: unique_id(),
+            c,
+        }
+    }
+}
 
 /// Data from the fetcher
-type Metadata = ();
 enum SpotifyThing {
     Album(FullAlbum),
     Track(FullTrack),
@@ -140,56 +458,75 @@ impl<T> Req<T> {
     }
 }
 
+#[derive_where::derive_where(Default)]
 struct Queue<T> {
     data: RwLock<VecDeque<Req<T>>>,
     condvar: async_condvar_fair::Condvar,
 }
 
-impl<T: Clone + PartialEq> Queue<T> {
+impl<T: Clone + PartialEq + Debug + Hash + Eq> Queue<T> {
     fn add_unique(&self, v: impl IntoIterator<Item = T>) {
         let mut guard = self.data.write();
-        let keys = guard.iter().map(|v| v.id.clone()).collect_vec();
+        let mut keys: HashSet<T> = guard.iter().map(|v| v.id.clone()).collect();
 
         let v = v
             .into_iter()
-            .filter(|id| !keys.contains(id))
+            .filter(|id| keys.insert(id.clone())) // clever way to ensure unique
             .map(|id| Req::new(id))
             .collect_vec();
 
-        if v.is_empty() {
+        if !v.is_empty() {
             self.condvar.notify_all();
             guard.extend(v);
         }
     }
 
-    fn take_unclaimed(&self, n: usize, reqid: u64) -> Vec<T> {
+    pub fn take_unclaimed(&self, reqid: u64, min: usize, max: usize) -> Option<Vec<T>> {
         let mut guard = self.data.write();
-        guard
+        self._take_unclaimed(reqid, min, max, &mut guard)
+    }
+
+    fn _take_unclaimed(
+        &self,
+        reqid: u64,
+        min: usize,
+        max: usize,
+        guard: &mut VecDeque<Req<T>>,
+    ) -> Option<Vec<T>> {
+        let free = guard
             .iter_mut()
             .filter(|r| r.req.is_none())
-            .take(n)
+            .take(max)
+            .collect_vec();
+
+        if free.len() < min {
+            return None;
+        };
+
+        let ids = free
+            .into_iter()
             .map(|r| {
                 r.req = Some(reqid);
                 r.id.clone()
             })
-            .collect_vec()
+            .collect_vec();
+
+        Some(ids)
     }
 
     async fn wait_unclaimed(&self, reqid: u64, min: usize, max: usize) -> Vec<T> {
-        let mut v = Vec::new();
-        while v.len() < min {
-            self.wait();
-            let a = self.take_unclaimed(max - v.len(), reqid);
-            v.extend(a);
+        loop {
+            let mut data = self.data.write();
+            let v = self._take_unclaimed(reqid, min, max, &mut data);
+            if v.is_none() {
+                self.condvar.wait_no_relock(data).await;
+            };
         }
-        v
     }
 
-    async fn wait(&self) {
+    fn ready(&self) -> usize {
         let guard = self.data.read();
-        if guard.is_empty() {
-            self.condvar.wait_no_relock(guard);
-        }
+        guard.iter().filter(|r| r.req.is_none()).count()
     }
 
     fn remove(&self, reqid: u64) -> Vec<Req<T>> {
@@ -206,19 +543,20 @@ impl<T: Clone + PartialEq> Queue<T> {
         v
     }
 
-    fn release(&self, reqid: u64) {
+    fn release(&self, reqid: u64) -> usize {
         let mut guard = self.data.write();
-        let mut changed = false;
+        let mut changed = 0;
         for r in guard.iter_mut() {
             if r.req == Some(reqid) {
                 r.req = None;
-                changed = true;
+                changed += 1;
             }
         }
 
-        if changed {
+        if changed > 0 {
             self.condvar.notify_all();
         }
+        changed
     }
 }
 
@@ -227,105 +565,28 @@ pub fn unique_id() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-#[kameo::messages]
-impl Actor {
-    #[message]
-    pub fn fetch_album(&mut self, ids: Vec<String>) {
-        let ids = ids
-            .into_iter()
-            .map(|s| AlbumId::from_id_or_uri(&s).unwrap().clone_static());
-
-        self.album_q.add_unique(ids);
-    }
-
-    #[message]
-    pub fn fetch_track(&mut self, ids: Vec<String>) {
-        todo!();
-    }
-
-    #[message]
-    pub fn fetch_playlist(&mut self, id: String) {
-        todo!();
-    }
-
-    #[message(derive(Clone))]
-    pub fn task(&mut self) {
-        self.trigger.reset();
-        while let Ok(c) = self.ratelimiter.connections.clone().try_acquire_owned() {
-            // ALLOCATE A NEW CONNECTION
-            let reqid = unique_id();
-            let ids = self.album_q.take_unclaimed(20, reqid);
-            self.spawn_album_task(c, ids, reqid);
-
-            // With this method how to prioritize?
-        }
-
-        // if self.album_q.is_empty() {
-        //     tokio::spawn(async { todo!() });
-        // } else {
-
-        // }
-    }
-
-    pub fn spawn_album_task(
-        &self,
-        c: OwnedSemaphorePermit,
-        ids: Vec<AlbumId<'static>>,
-        reqid: u64,
-    ) {
-        let client = self.client.clone();
-        let this = self.this.clone();
-        let ratelimiter = self.ratelimiter.clone();
-        tokio::spawn(async move {
-            let mut albums = ratelimiter
-                .with_rate_limit(|| client.albums(ids.clone(), None))
-                .await
-                .unwrap();
-
-            // depaginate tracks
-            {
-                for a in albums.iter_mut() {
-                    depageinate_album(&client, &ratelimiter, a).await.unwrap();
-                }
-            }
-
-            let data = albums
-                .into_iter()
-                .map(|a| SpotifyThing::Album(a))
-                .collect_vec();
-
-            this.tell(FetcherData { data, reqid }).send().await.unwrap();
-            drop(c);
-        });
-    }
-
-    /// get data back from fetcher
-    #[message]
-    fn fetcher_data(&mut self, data: Vec<SpotifyThing>, reqid: u64) {
-        self.album_q.remove(reqid);
-
-        // TODO do something with the data
-        todo!();
-    }
-}
-
 #[derive(Clone)]
 pub struct RateLimiter {
-    sleeping: Arc<Mutex<Option<Instant>>>,
+    sleep_until: Arc<Mutex<Option<Instant>>>,
     pub connections: Arc<tokio::sync::Semaphore>,
+    pub revoked_count: Arc<AtomicUsize>,
 }
 
 impl Default for RateLimiter {
     fn default() -> Self {
         Self {
-            sleeping: Default::default(),
             connections: Semaphore::new(10).into(),
+            sleep_until: Default::default(),
+            revoked_count: Default::default(),
         }
     }
 }
 
 impl RateLimiter {
-    pub async fn with_rate_limit<'async_trait, F, T>(&self, f: F) -> rspotify::ClientResult<T>
+    pub async fn with_rate_limit_acquired<'async_trait, F, T>(
+        &self,
+        f: F,
+    ) -> rspotify::ClientResult<T>
     where
         F: Fn() -> ::core::pin::Pin<
             Box<
@@ -335,57 +596,96 @@ impl RateLimiter {
             >,
         >,
     {
-        let mut restore_permits = 0;
+        // let _c = match needs_aquired {
+        //     true => Some(),
+        //     false => None,
+        // };
+        let _c = self.connections.acquire().await;
+        self.with_rate_limit(f, true).await
+    }
+
+    pub async fn with_rate_limit<'async_trait, F, T>(
+        &self,
+        f: F,
+        retry: bool,
+    ) -> rspotify::ClientResult<T>
+    where
+        F: Fn() -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = rspotify::ClientResult<T>>
+                    + ::core::marker::Send
+                    + 'async_trait,
+            >,
+        >,
+    {
         let mut count = 0;
-        const MAX_TRIES: i32 = 10;
+        const MAX_TRIES: i32 = 8;
 
         loop {
-            {
-                let t = self.sleeping.lock().clone();
+            loop {
+                let t = self.sleep_until.lock().clone();
                 match t {
-                    Some(t) => tokio::time::sleep_until(t).await,
+                    Some(mut t) => {
+                        let extra = (count - 1).max(1) as f32 / 2.0 + rand::random::<f32>();
+                        t += Duration::from_secs_f32(extra);
+                        tokio::time::sleep_until(t).await
+                    }
                     None => {}
                 };
+
+                let mut guard = self.sleep_until.lock();
+
+                // someone else might have extended the time
+                let Some(t) = guard.as_ref() else { break };
+                let elapsed = Instant::now().duration_since(*t);
+                if elapsed != Duration::ZERO {
+                    *guard = None;
+                    break;
+                }
+
+                // tracing::info!(
+                //     "lets see if this actually happens {}ms",
+                //     elapsed.as_millis()
+                // );
             }
 
             let v = f().await;
             let Some(rl) = RateLimit::get_res(&v) else {
-                self.connections.add_permits(restore_permits);
+                self.connections.add_permits(
+                    self.revoked_count
+                        .swap(0, std::sync::atomic::Ordering::Relaxed),
+                );
                 return v;
             };
 
-            if count > MAX_TRIES {
-                tracing::error!("RATE LIMIT [{}] abort", count);
-                self.connections.add_permits(restore_permits);
-                return v;
+            // RATE LIMIT HIT
+            {
+                // first gobble up all the connections
+                let restore_permits = self.connections.forget_permits(100);
+                let c = self
+                    .revoked_count
+                    .fetch_add(restore_permits, std::sync::atomic::Ordering::Relaxed);
+                assert!(c + restore_permits < 10);
             }
 
-            // RATE LIMIT HIT
-            // first gobble up all the connections
-            restore_permits = self.connections.forget_permits(100);
-
             let n = rl.retry_after.unwrap_or(5.0);
-            let n = n * (1.2f32.powi(count as i32)); // wait longer than spotify tells us too.
+            let n = n * 1.1f32.powi(count); // wait longer than spotify tells us too.
 
             let mut t = Instant::now() + Duration::from_secs_f32(n);
 
             {
-                let mut guard = self.sleeping.lock();
+                let mut guard = self.sleep_until.lock();
                 t = guard.map(|t2| t.max(t2)).unwrap_or(t);
                 *guard = Some(t);
             }
 
             tracing::warn!(RetryAfter = n, "RATE LIMIT [{}]", count);
-            tokio::time::sleep_until(t).await;
-
-            let mut guard = self.sleeping.lock();
-            if let Some(t) = guard.as_ref() {
-                if Instant::now().duration_since(*t) != Duration::ZERO {
-                    *guard = None;
-                }
-            };
-
             count += 1;
+
+            if count >= MAX_TRIES || !retry {
+                tracing::error!("RATE LIMIT [{}] abort", count);
+                return v;
+            }
         }
     }
 }
@@ -424,6 +724,7 @@ impl RateLimit {
 }
 
 #[derive(Debug, Clone)]
+#[derive_where::derive_where(Default)]
 struct Init<T>(Option<T>);
 impl<T> Deref for Init<T> {
     type Target = T;
@@ -446,6 +747,13 @@ impl<T> Init<T> {
     }
 }
 
+/// this represents a task that can be latched, only one copy of the Task will be on the actor's queue at a time
+/// this solves three issues:
+///     1. many different places can signal that the state machine needs a crank (we avoid complicated select! statements)
+///     2. we can defer actually cranking the state machine untill after current messages are processed (as opposed to just calling a method on Actor)
+///     3. we can avoid shared state; the state machine can take &mut (as opposed to tokio::spawn'd processing loop)
+///
+/// the handler for the Task must reset the latch, or it will never run again
 #[derive_where::derive_where(Clone)] // https://github.com/rust-lang/rust/issues/26925
 struct TriggerTask<T: Clone, A: kameo::Actor> {
     trigger: Arc<AtomicBool>,
@@ -459,6 +767,7 @@ where
     A: kameo::Actor<Mailbox = kameo::mailbox::unbounded::UnboundedMailbox<A>>
         + kameo::message::Message<T>,
 {
+    /// tell the actor to run the task, if it has not already been told
     pub fn trigger_task(&self) {
         if !self
             .trigger
@@ -472,82 +781,9 @@ where
         }
     }
 
+    /// called from task handler to clear the flag, allowing subsequent runs
     pub fn reset(&self) {
         self.trigger
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
-
-// async fn playlist_sync(
-//     &self,
-//     mut current: Option<Collection>,
-//     playlist: Collection,
-// ) -> eyre::Result<()> {
-//     let pid: PlaylistId = Uri::try_from(playlist.id.clone())
-//         .unwrap()
-//         .try_into()
-//         .unwrap();
-//     let pl = self.client.playlist(pid, None, None).await?;
-
-//     if let Some(inner) = current.as_ref() {
-//         if inner.snapshot.as_ref().unwrap() == &pl.snapshot_id {
-//             current = None;
-//         }
-//     }
-
-//     let current = if let Some(inner) = current {
-//         inner
-//     } else {
-//         let tracks: ClientResult<Vec<PlaylistItem>> =
-//             self.client.paginate(pl.tracks).try_collect().await;
-
-//         let tracks = tracks?
-//             .into_iter()
-//             .map(|t| {
-//                 let t = match t.track {
-//                     Some(PlayableItem::Track(t)) => t,
-//                     Some(_) => Err(PlaylistTrackError::NotTrack)?,
-//                     None => Err(PlaylistTrackError::Missing)?,
-//                 };
-
-//                 Ok(t.id.expect("why no id").into())
-//             })
-//             .collect_vec();
-
-//         Collection {
-//             id: playlist.id.clone(),
-//             kind: crate::types::Kind::Album,
-//             name: pl.name,
-//             tracks,
-//             snapshot: Some(pl.snapshot_id),
-//         }
-//     };
-
-//     let actions = sequence(current.tracks, playlist.tracks.clone(), Default::default());
-
-//     for a in actions {
-//         match a {
-//             crate::utils::diff::Actions::Snapshot(_) => todo!(),
-//             crate::utils::diff::Actions::Append(_) => todo!(),
-//             crate::utils::diff::Actions::Add(_, _) => todo!(),
-//             crate::utils::diff::Actions::Delete(_, _) => todo!(),
-//             crate::utils::diff::Actions::DeleteAll(_, _) => todo!(),
-//             crate::utils::diff::Actions::Replace(_) => todo!(),
-//             crate::utils::diff::Actions::Move { index, count, to } => todo!(),
-//         }
-//     }
-
-//     let final_tracks = self
-//         .get_playlist(playlist.id)
-//         .await?
-//         .tracks
-//         .into_iter()
-//         .map(|v| v.map(|t| t.id))
-//         .collect_vec();
-//     if final_tracks != playlist.tracks {
-//         bail!("final result is not correct")
-//     }
-
-//     Ok(())
-// }
-//}

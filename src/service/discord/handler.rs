@@ -1,4 +1,3 @@
-
 use parking_lot::Mutex;
 use postage::{sink::Sink, stream::Stream};
 use serenity::{
@@ -12,7 +11,7 @@ use serenity::{
 use tracing::info;
 
 pub use crate::prelude::*;
-use crate::utils::when_even::{Loggable, OnError};
+use crate::utils::when_even::{Bug, Loggable};
 
 use super::db::add_message;
 
@@ -32,7 +31,7 @@ impl super::Module {
         self.http.set(client.http.clone()).unwrap();
 
         tokio::spawn(async move {
-            client.start().await.log::<OnError>().unwrap();
+            client.start().await.log::<Bug>().unwrap();
         });
 
         // wait for startup to finish
@@ -82,7 +81,7 @@ impl EventHandler for Handler {
         //         .log_and_drop::<OnError>();
         // }
 
-        add_message(&self.0.db, msg).await.log_and_drop::<OnError>();
+        add_message(&self.0.db, msg).await.log_and_drop::<Bug>();
     }
 
     async fn reaction_add(&self, ctx: Context, react: Reaction) {}

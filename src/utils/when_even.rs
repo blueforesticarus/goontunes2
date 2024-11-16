@@ -19,12 +19,21 @@ pub trait Logger<T: ?Sized> {
     fn log(value: &T);
 }
 
+pub struct Bug;
+impl<T, E: Debug> Logger<Result<T, E>> for Bug {
+    fn log(value: &Result<T, E>) {
+        match value {
+            Ok(_) => {}
+            Err(e) => error!("{:?}, {}", e, Backtrace::capture()),
+        }
+    }
+}
 pub struct OnError;
 impl<T, E: Debug> Logger<Result<T, E>> for OnError {
     fn log(value: &Result<T, E>) {
         match value {
             Ok(_) => {}
-            Err(e) => error!("{:?}, {}", e, Backtrace::capture()),
+            Err(e) => error!("{:?}", e),
         }
     }
 }

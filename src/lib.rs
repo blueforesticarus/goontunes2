@@ -14,7 +14,7 @@ pub mod types;
 
 pub mod utils {
     //pub mod channel;
-    //pub mod diff;
+    pub mod diff;
     pub mod links;
     //pub mod takecell;
     pub mod synctron;
@@ -42,5 +42,5 @@ pub mod prelude {
 
     pub use crate::database::MyDb;
     pub use crate::types;
-    pub use crate::utils::when_even::{Loggable, OnError};
+    pub use crate::utils::when_even::{Bug, Loggable};
 }

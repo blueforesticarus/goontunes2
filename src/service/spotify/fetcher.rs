@@ -4,20 +4,30 @@ use std::{
 };
 
 use async_condvar_fair::Condvar;
+use chrono::{Local, Utc};
 use culpa::{throw, throws};
-use deadqueue::unlimited::Queue;
 use eyre::Error;
+use futures::future::join_all;
+use itertools::Itertools;
 use parking_lot::Mutex;
 use rspotify::{
-    clients::BaseClient,
-    model::{album, AlbumId, FullAlbum, FullPlaylist, FullTrack, Page, PlaylistId, TrackId},
-    AuthCodeSpotify,
+    clients::{pagination::paginate, BaseClient},
+    model::{
+        album, AlbumId, FullAlbum, FullPlaylist, FullTrack, ItemPositions, Page, PlayableId,
+        PlayableItem, PlaylistId, PlaylistItem, TrackId,
+    },
+    prelude::OAuthClient,
+    AuthCodeSpotify, DEFAULT_PAGINATION_CHUNKS,
 };
 use serenity::async_trait;
 use tokio::sync::Semaphore;
-use tracing::{instrument, warn};
+use tracing::{instrument, warn, Instrument};
 
-use crate::{types::Link, utils::when_even::Ignoreable};
+use crate::{
+    prelude::Loggable,
+    types::Link,
+    utils::when_even::{Ignoreable, OnError},
+};
 
 use super::RateLimiter;
 
@@ -44,17 +54,23 @@ use super::RateLimiter;
 //type Queue<T> = tokio::sync::Mutex<VecDeque<T>>;
 
 #[throws(eyre::Error)]
+#[tracing::instrument("paginate", skip_all)]
 pub async fn depageinate_album(
     client: &AuthCodeSpotify,
     ratelimiter: &RateLimiter,
     album: &mut FullAlbum,
 ) {
-    let mut offset = album.tracks.offset;
     if album.tracks.next.is_some() {
+        let mut offset = album.tracks.offset;
         while album.tracks.next.is_some() {
             let page = match ratelimiter
-                .with_rate_limit(|| {
-                    client.album_track_manual(album.id.clone(), None, None, Some(offset))
+                .with_rate_limit_acquired(|| {
+                    client.album_track_manual(
+                        album.id.clone(),
+                        None,
+                        Some(DEFAULT_PAGINATION_CHUNKS),
+                        Some(offset),
+                    )
                 })
                 .await
             {
@@ -73,187 +89,191 @@ pub async fn depageinate_album(
     }
 }
 
-// struct Req<ID, V> {
-//     id: ID,
-//     tx: tokio::sync::oneshot::Sender<V>,
-// }
+#[throws(eyre::Error)]
+#[tracing::instrument("paginate", skip_all)]
+pub async fn depageinate_playlist(
+    client: &AuthCodeSpotify,
+    ratelimiter: &RateLimiter,
+    pl: &mut FullPlaylist,
+) {
+    if pl.tracks.next.is_some() {
+        let mut offset = pl.tracks.offset;
+        while pl.tracks.next.is_some() {
+            let page = match ratelimiter
+                .with_rate_limit_acquired(|| {
+                    client.playlist_items_manual(
+                        pl.id.clone(),
+                        None,
+                        None,
+                        Some(DEFAULT_PAGINATION_CHUNKS),
+                        Some(offset),
+                    )
+                })
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => throw!(e),
+            };
 
-// pub struct Fetcher {
-//     album_q: Vec<Req<AlbumId<'static>, FullAlbum>>,
-//     track_q: Vec<Req<TrackId<'static>, FullTrack>>,
-//     connections: tokio::sync::Semaphore,
-// }
+            if page.next.is_some() && page.limit != page.items.len() as u32 {
+                warn!("weird page {}", page.href);
+            }
 
-// impl Default for Fetcher {
-//     fn default() -> Self {
-//         Self {
-//             album_q: Default::default(),
-//             track_q: Default::default(),
-//             connections: Semaphore::new(10),
-//         }
-//     }
-// }
+            pl.tracks.next = page.next;
+            pl.tracks.items.extend(page.items.into_iter());
+            offset += page.limit;
+        }
+    }
+}
 
-// impl super::Module {
-//     #[throws]
-//     pub async fn album(&self, album: &str) -> FullAlbum {
-//         let id = AlbumId::from_id_or_uri(album)?.into_static(); //TODO impl try_into<AlbumId> for String
-//         let (tx, rx) = tokio::sync::oneshot::channel();
+#[throws(eyre::Error)]
+#[tracing::instrument("paginate", skip_all)]
+pub async fn depageinate_playlist_fast(
+    client: &AuthCodeSpotify,
+    ratelimiter: &RateLimiter,
+    pl: &mut FullPlaylist,
+) {
+    // TODO feed data in real time
 
-//         // PROBLEM needs caching and such
+    if pl.tracks.next.is_some() {
+        let mut offset = pl.tracks.offset;
+        let mut ts = vec![];
+        while offset < pl.tracks.total {
+            // EDIT: refactored so lease is dropped as soon as connection is finished
+            // let needs_lease = !ts.is_empty(); //first task reuses future from the client
+            let id = pl.id.clone();
+            let f = ratelimiter.with_rate_limit_acquired(move || {
+                client.playlist_items_manual(
+                    id.clone(),
+                    None,
+                    None,
+                    Some(DEFAULT_PAGINATION_CHUNKS),
+                    Some(offset),
+                )
+            });
 
-//         self.fetcher.album_q.push(Req { id, tx });
-//         let mut album = rx.await?;
-//         self.depageinate_album(&mut album).await?;
-//         album
-//     }
+            ts.push(f);
+            offset += DEFAULT_PAGINATION_CHUNKS;
+        }
 
-//     #[throws]
-//     pub async fn track(&self, track: &str) -> FullTrack {
-//         let id = TrackId::from_id_or_uri(track)?.into_static();
-//         let (tx, rx) = tokio::sync::oneshot::channel();
-//         self.fetcher.track_q.push(Req { id, tx });
-//         rx.await?
-//     }
+        for page in join_all(ts).await {
+            pl.tracks.items.extend(page.unwrap().items);
+        }
+    }
+}
 
-//     #[throws]
-//     pub async fn playlist(&self, playlist: &str, snapshot: Option<&str>) -> FullPlaylist {
-//         let id = PlaylistId::from_id_or_uri(playlist)?.into_static();
-//         let mut res = self.client().playlist(id, None, None).await?;
-//         if snapshot != Some(&res.snapshot_id) {
-//             self.depageinate_playlist(&mut res).await?;
-//         }
-//         res
-//     }
-// }
+/// Does not support podcasts because I don't support Joe Rogan.
+#[throws(eyre::Error)]
+#[tracing::instrument(skip_all)]
+async fn playlist_sync(
+    client: &AuthCodeSpotify,
+    ratelimiter: &RateLimiter,
+    pl: FullPlaylist,
+    target: Vec<TrackId<'static>>,
+) {
+    assert_eq!(
+        pl.tracks.total as usize,
+        pl.tracks.items.len(),
+        "function expects a depaginated playlist"
+    );
 
-// // task to execute the fetching
-// impl super::Module {
-//     #[throws(eyre::Report)]
-//     async fn depageinate_album(&self, album: &mut FullAlbum) {
-//         let mut offset = album.tracks.offset;
-//         if album.tracks.next.is_some() {
-//             let _guard = self.fetcher.connections.acquire();
-//             while album.tracks.next.is_some() {
-//                 let page = match self
-//                     .client()
-//                     .album_track_manual(album.id.clone(), None, None, Some(offset))
-//                     .await
-//                 {
-//                     Ok(v) => v,
-//                     Err(e) => throw!(e),
-//                 };
+    let current: Result<Vec<_>, PlaylistItem> = pl
+        .tracks
+        .items
+        .into_iter()
+        .map(|t| -> Result<TrackId<'static>, PlaylistItem> {
+            match t.track {
+                Some(rspotify::model::PlayableItem::Track(FullTrack { id: Some(id), .. })) => {
+                    Ok(id)
+                }
+                _ => Err(t),
+            }
+        })
+        .try_collect();
 
-//                 if page.next.is_some() && page.limit != page.items.len() as u32 {
-//                     warn!("weird page {}", page.href);
-//                 }
+    let actions = match current {
+        Ok(current) => crate::utils::diff::sequence(current, target.clone(), Default::default()),
+        Err(e) => {
+            tracing::warn!(
+                "Using full replacement due to weird stuff in playlist: {:?}",
+                e
+            );
+            crate::utils::diff::full_replace(target.clone(), Default::default())
+        }
+    };
 
-//                 album.tracks.next = page.next;
-//                 album.tracks.items.extend(page.items.into_iter());
-//                 offset += page.limit;
-//             }
-//         }
-//     }
+    for a in actions {
+        match a {
+            crate::utils::diff::Actions::Append(v) => {
+                let items = v.into_iter().map(|t| t.into()).collect_vec();
+                let foo = || client.playlist_add_items(pl.id.clone(), items.clone(), None);
+                let ret = ratelimiter.with_rate_limit(foo, true).await;
+                ret.log_and_drop::<OnError>();
+            }
+            crate::utils::diff::Actions::Add(v, i) => {
+                let items = v.into_iter().map(|t| t.into()).collect_vec();
+                let foo =
+                    || client.playlist_add_items(pl.id.clone(), items.clone(), Some(i as u32));
+                let ret = ratelimiter.with_rate_limit(foo, true).await;
+                ret.log_and_drop::<OnError>();
+            }
+            crate::utils::diff::Actions::Delete(v) => {
+                tracing::warn!("positional delete is broken");
+                let mut hm = HashMap::<_, Vec<u32>>::new();
+                for (i, t) in v {
+                    hm.entry(t).or_insert(Default::default()).push(i as u32);
+                }
 
-//     #[throws(eyre::Report)]
-//     async fn depageinate_playlist(&self, pl: &mut FullPlaylist) {
-//         let mut offset = pl.tracks.offset;
-//         if pl.tracks.next.is_some() {
-//             let _guard = self.fetcher.connections.acquire();
-//             while pl.tracks.next.is_some() {
-//                 let page = match self
-//                     .client()
-//                     .playlist_items_manual(pl.id.clone(), None, None, None, Some(offset))
-//                     .await
-//                 {
-//                     Ok(v) => v,
-//                     Err(e) => throw!(e),
-//                 };
+                let foo = || {
+                    let items = hm
+                        .iter()
+                        .map(|(id, p)| ItemPositions {
+                            id: PlayableId::Track(id.clone_static()),
+                            positions: &p,
+                        })
+                        .collect_vec();
+                    client.playlist_remove_specific_occurrences_of_items(
+                        pl.id.clone(),
+                        items,
+                        Some(&pl.snapshot_id),
+                    )
+                };
+                let ret = ratelimiter.with_rate_limit(foo, true).await;
+                ret.log_and_drop::<OnError>();
+            }
+            crate::utils::diff::Actions::DeleteAll(v) => {
+                let items = v.into_iter().map(|t| t.into()).collect_vec();
+                let foo = || {
+                    client.playlist_remove_all_occurrences_of_items(
+                        pl.id.clone(),
+                        items.clone(),
+                        Some(&pl.snapshot_id),
+                    )
+                };
+                let ret = ratelimiter.with_rate_limit(foo, true).await;
+                ret.log_and_drop::<OnError>();
+            }
+            crate::utils::diff::Actions::Replace(v) => {
+                let items = v.into_iter().map(|t| t.into()).collect_vec();
+                let foo = || client.playlist_replace_items(pl.id.clone(), items.clone());
+                let ret = ratelimiter.with_rate_limit(foo, true).await;
+                ret.log_and_drop::<OnError>();
+            }
+        }
+    }
 
-//                 if page.next.is_some() && page.limit != page.items.len() as u32 {
-//                     warn!("weird page {}", page.href);
-//                 }
+    // TODO rescan
 
-//                 pl.tracks.next = page.next;
-//                 pl.tracks.items.extend(page.items.into_iter());
-//                 offset += page.limit;
-//             }
-//         }
-//     }
+    // update description
+    let desc = pl.description.unwrap_or_default();
+    let desc = desc.split("sync: ").next().unwrap();
+    let mut desc = desc.trim().to_string();
+    if !desc.is_empty() {
+        desc += "\n\n";
+    }
+    let desc = format!("{desc}sync: {}", Local::now());
 
-//     #[throws(eyre::Report)]
-//     #[instrument(err, skip(self))]
-//     async fn consume_album_q(&self) {
-//         let _guard = self.fetcher.connections.acquire();
-//         let mut ls: HashMap<_, _> = ls.into_iter().map(|rq| (rq.id, rq.tx)).collect();
-
-//         let mut albums = self.client().albums(ls.keys().cloned(), None).await?;
-//         for album in albums.iter_mut() {
-//             //self.depageinate_album(&mut album);
-//             //add_full_album(&self.db, album.clone()).await.ignore();
-//             ls.remove(&album.id).unwrap().send(album.clone()).unwrap();
-//         }
-//     }
-
-//     #[throws(eyre::Report)]
-//     #[instrument(err, skip(self))]
-//     async fn consume_track_q(&self) {
-//         let _guard = self.fetcher.connections.acquire();
-
-//         let mut ls = vec![self.fetcher.track_q.pop().await];
-//         while let Some(v) = self.fetcher.track_q.try_pop() {
-//             ls.push(v);
-//             if ls.len() >= 100 {
-//                 break;
-//             }
-//         }
-//         let mut ls: HashMap<_, _> = ls.into_iter().map(|rq| (rq.id, rq.tx)).collect();
-
-//         let tracks = self.client().tracks(ls.keys().cloned(), None).await?;
-//         for track in tracks {
-//             ls.remove(track.id.as_ref().unwrap())
-//                 .unwrap()
-//                 .send(track.clone())
-//                 .unwrap();
-//         }
-//     }
-
-//     pub fn start_queue_task(self: Arc<Self>) {
-//         let this = self.clone();
-//         tokio::spawn(async move {
-//             loop {
-//                 this.consume_album_q().await.ignore();
-//             }
-//         });
-
-//         tokio::spawn(async move {
-//             loop {
-//                 self.consume_track_q().await.ignore();
-//             }
-//         });
-//     }
-// }
-
-// use super::db::*;
-
-// impl super::Module {
-//     pub async fn process_link(&self, link: Link) -> eyre::Result<()> {
-//         match link.kind.unwrap() {
-//             crate::types::Kind::Artist => todo!(),
-//             crate::types::Kind::Album => {
-//                 let album = self.album(&link.id).await?;
-//                 add_full_album(&self.db, album).await.unwrap();
-//             }
-//             crate::types::Kind::Track => {
-//                 let track = self.track(&link.id).await?;
-//                 add_full_track(&self.db, track).await.unwrap();
-//             }
-//             crate::types::Kind::Playlist => {
-//                 todo!();
-//             }
-//             crate::types::Kind::User => todo!(),
-//         };
-
-//         Ok(())
-//     }
-// }
+    let foo = || client.playlist_change_detail(pl.id.clone(), None, None, Some(&desc), None);
+    let ret = ratelimiter.with_rate_limit(foo, true).await;
+    ret.log_and_drop::<OnError>();
+}

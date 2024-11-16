@@ -115,6 +115,7 @@ func (self *ServicePlaylist) Update(p *Playlist) error {
  */
 
 use itertools::Itertools;
+use similar::{algorithms::IdentifyDistinct, capture_diff, capture_diff_deadline};
 
 #[derive(Debug, Clone, Copy)]
 /// Configures how playlist updates are sequenced
@@ -132,14 +133,14 @@ pub struct SequenceOptions {
 impl Default for SequenceOptions {
     fn default() -> Self {
         Self {
-            delete_positional: true,
+            delete_positional: false,
             max_n: 100, // spotify max is 100
         }
     }
 }
 
 /// Plan out api requests for updating playlist
-pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
+pub fn sequence<T: Eq + core::hash::Hash + Clone>(
     before: Vec<T>,
     after: Vec<T>,
     opt: SequenceOptions,
@@ -153,7 +154,15 @@ pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
     let mut simulated = before.clone();
 
     // First pass: Deletions
-    let diff = similar::capture_diff_slices(similar::Algorithm::Patience, &before, &after);
+    let h = IdentifyDistinct::<u32>::new(&before, 0..before.len(), &after, 0..after.len());
+    let diff = capture_diff(
+        similar::Algorithm::Lcs,
+        h.old_lookup(),
+        h.old_range(),
+        h.new_lookup(),
+        h.new_range(),
+    );
+
     for d in diff.iter().rev() {
         match d {
             similar::DiffOp::Replace {
@@ -172,12 +181,12 @@ pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
                         true => {
                             // delete by id and index
                             let chunk = chunk.map(|(i, t)| (i, t.clone())).collect_vec();
-                            Actions::Delete(chunk, Default::default())
+                            Actions::Delete(chunk)
                         }
                         false => {
                             // delete by id (all occurances)
                             let chunk = chunk.map(|(_, t)| t.clone()).collect_vec();
-                            Actions::DeleteAll(chunk, Default::default())
+                            Actions::DeleteAll(chunk)
                         }
                     })
                     .collect_vec();
@@ -197,7 +206,14 @@ pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
     }
 
     // Second pass: Insertions
-    let diff = similar::capture_diff_slices(similar::Algorithm::Patience, &simulated, &after);
+    let h = IdentifyDistinct::<u32>::new(&simulated, 0..simulated.len(), &after, 0..after.len());
+    let diff = capture_diff(
+        similar::Algorithm::Lcs,
+        h.old_lookup(),
+        h.old_range(),
+        h.new_lookup(),
+        h.new_range(),
+    );
     for d in diff.iter().rev() {
         match d {
             similar::DiffOp::Insert {
@@ -227,28 +243,33 @@ pub fn sequence<T: Eq + core::hash::Hash + Ord + Clone>(
 
     // Check if current plan is worse (more api requests) than clearing and rebuilding the whole playlist.
     // Note: if actually using snapshot actions, then correct actions count.
-    let worst_case = (after.len() + opt.max_n - 1) / opt.max_n;
+    let worst_case = after.len() / opt.max_n;
     if actions.len() >= worst_case {
-        actions.clear();
-        simulated.clear();
+        full_replace(after, opt)
+    } else {
+        actions
+    }
+}
 
-        let items = after.iter().chunks(opt.max_n);
-        let mut items = items.into_iter().map(|f| f.cloned().collect_vec());
+pub fn full_replace<T: Clone + Eq>(after: Vec<T>, opt: SequenceOptions) -> Vec<Actions<T>> {
+    let mut actions = Vec::new();
+    let mut simulated = vec![];
 
-        // First action is replace, which clears the playlist
-        let mut v = items.next().unwrap_or_default();
-        actions.push(Actions::Replace(v.clone()));
+    let items = after.iter().chunks(opt.max_n);
+    let mut items = items.into_iter().map(|f| f.cloned().collect_vec());
+
+    // First action is replace, which clears the playlist
+    let mut v = items.next().unwrap_or_default();
+    actions.push(Actions::Replace(v.clone()));
+    simulated.append(&mut v);
+
+    // If playlist more than 100 tracks then we need further add commands
+    for mut v in items {
+        actions.push(Actions::Append(v.clone()));
         simulated.append(&mut v);
-
-        // If playlist more than 100 tracks then we need further add commands
-        for mut v in items {
-            actions.push(Actions::Append(v.clone()));
-            simulated.append(&mut v);
-        }
-
-        assert!(simulated == after);
     }
 
+    assert!(simulated == after);
     actions
 }
 
@@ -259,9 +280,6 @@ pub type SnapshotKey = usize;
 /// move up to 100 contiguous ids
 
 pub enum Actions<T> {
-    /// unused: tell spotify module to record last actions snapshot so it can be refered to as SnapshotKey in later requests.
-    Snapshot(SnapshotKey),
-
     /// add up to 100 ids to end of playlist
     Append(Vec<T>),
 
@@ -269,20 +287,13 @@ pub enum Actions<T> {
     Add(Vec<T>, usize),
 
     /// delete up to 100 ids (undocumented positional disambiguation)
-    Delete(Vec<(usize, T)>, SnapshotKey),
+    Delete(Vec<(usize, T)>),
 
     /// delete up to 100 ids (deletes all occurances of uri)
-    DeleteAll(Vec<T>, SnapshotKey),
+    DeleteAll(Vec<T>),
 
     /// replace (clear) the whole playlist with up to 100 ids
     Replace(Vec<T>),
-
-    /// TODO
-    Move {
-        index: usize,
-        count: usize,
-        to: usize,
-    },
 }
 
 #[cfg(test)]

@@ -106,7 +106,7 @@ impl Module {
             .insert("message")
             .content(message)
             .await
-            .log::<OnError>()
+            .log::<Bug>()
             .unwrap_or_default();
 
         // let data = types::Message {
@@ -151,7 +151,7 @@ impl Module {
                     .clone()
             }
 
-            let event = match get_create_event(target).await.log::<OnError>() {
+            let event = match get_create_event(target).await.log::<Bug>() {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -189,11 +189,11 @@ impl Module {
                     AnyMessageLikeEvent::RoomMessage(MessageLikeEvent::Original(event)) => self
                         .process_message(&event.into(), target)
                         .await
-                        .log_and_drop::<OnError>(),
+                        .log_and_drop::<Bug>(),
                     AnyMessageLikeEvent::Reaction(MessageLikeEvent::Original(event)) => self
                         .process_reaction(&event.into(), target)
                         .await
-                        .log_and_drop::<OnError>(),
+                        .log_and_drop::<Bug>(),
                     AnyMessageLikeEvent::RoomEncrypted(e) => {
                         warn!("encrypted");
                     }
@@ -226,7 +226,7 @@ impl Module {
         self.client()
             .join_room_by_id(room_id)
             .await
-            .log::<OnError>();
+            .log::<Bug>();
         tokio::time::sleep(Duration::from_millis(100)).await; // I have no reason to assume this is needed, but I don't feel like debugging
 
         // XXX idk if this works
@@ -248,7 +248,7 @@ impl Module {
         let mut avatar: Option<String> = None;
 
         for room in self.client().joined_rooms() {
-            if let Ok(Some(m)) = room.get_member(&user_id).await.log::<OnError>() {
+            if let Ok(Some(m)) = room.get_member(&user_id).await.log::<Bug>() {
                 if let Some(n) = m.display_name() {
                     alias.push(n.to_string())
                 }

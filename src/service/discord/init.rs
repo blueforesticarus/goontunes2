@@ -18,25 +18,25 @@ impl Module {
         for guild in self.http().get_guilds(None, None).await? {
             add_guild(&self.db, guild.clone())
                 .await
-                .log_and_drop::<OnError>();
+                .log_and_drop::<Bug>();
 
             for channel in self
                 .http()
                 .get_channels(guild.id)
                 .await
-                .log::<OnError>()
+                .log::<Bug>()
                 .unwrap_or_default()
             {
                 add_channel(&self.db, serenity::all::Channel::Guild(channel))
                     .await
-                    .log_and_drop::<OnError>();
+                    .log_and_drop::<Bug>();
             }
         }
 
         for channel in self.config.channels.iter() {
             self.scan_since(ChannelId::new(channel.parse().unwrap()))
                 .await
-                .log_and_drop::<OnError>()
+                .log_and_drop::<Bug>()
         }
     }
 
@@ -45,7 +45,7 @@ impl Module {
     async fn scan_since(&self, channel_id: ChannelId) {
         let last = get_last_message_for_channel(&self.db, channel_id)
             .await
-            .log::<OnError>()
+            .log::<Bug>()
             .unwrap_or_default();
         let last = last.map(|v| v.ts).unwrap_or_default();
 
@@ -59,7 +59,7 @@ impl Module {
             for msg in msgs.iter() {
                 add_message(&self.db, msg.clone())
                     .await
-                    .log_and_drop::<OnError>();
+                    .log_and_drop::<Bug>();
             }
 
             let Some(oldest) = msgs.iter().min_by_key(|v| v.timestamp.to_utc()) else {
