@@ -76,6 +76,7 @@ type-map = "0.2.0"
 derive-new = "0.7.0"
 venator = "0.2.0"
 json_diff_ng = "0.6.0"
+clap_complete = { version = "4.5.38", features = ["unstable-dynamic"] }
 #venator = "0.2.0"
 
 [patch.crates-io]
@@ -86,3 +87,6 @@ json_diff_ng = "0.6.0"
 #surrealdb = { path = "forks/surrealdb/lib"}
 #rspotify = { path = "forks/rspotify"}
 serenity = { git="https://github.com/serenity-rs/serenity" }
+jaq-core = { git="https://github.com/01mf02/jaq"}
+jaq-std = { git="https://github.com/01mf02/jaq"}
+jaq-json = { git="https://github.com/01mf02/jaq"}

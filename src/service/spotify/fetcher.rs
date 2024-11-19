@@ -1,35 +1,25 @@
 use std::{
-    collections::{HashMap, VecDeque},
-    fmt::Debug,
+    collections::HashMap,
     future::Future,
-    process::Output,
-    sync::Arc,
 };
 
-use async_condvar_fair::Condvar;
-use chrono::{format::Item, Local, Utc};
+use chrono::Local;
 use culpa::{throw, throws};
-use eyre::Error;
-use futures::{future::join_all, stream::FuturesUnordered, FutureExt, Sink, SinkExt, StreamExt};
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use itertools::Itertools;
-use parking_lot::Mutex;
 use rspotify::{
-    clients::{pagination::paginate, BaseClient},
+    clients::BaseClient,
     model::{
-        album, AlbumId, FullAlbum, FullPlaylist, FullTrack, ItemPositions, Page, PlayableId,
-        PlayableItem, PlaylistId, PlaylistItem, SimplifiedTrack, TrackId,
+        FullAlbum, FullPlaylist, FullTrack, ItemPositions, Page, PlayableId, PlaylistItem, SimplifiedTrack, TrackId,
     },
     prelude::OAuthClient,
     AuthCodeSpotify, DEFAULT_PAGINATION_CHUNKS,
 };
-use serenity::async_trait;
-use tokio::sync::Semaphore;
-use tracing::{instrument, warn, Instrument};
+use tracing::warn;
 
 use crate::{
     prelude::Loggable,
-    types::Link,
-    utils::when_even::{Ignoreable, OnError},
+    utils::when_even::OnError,
 };
 
 use super::RateLimiter;

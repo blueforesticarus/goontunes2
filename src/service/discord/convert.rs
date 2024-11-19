@@ -7,13 +7,11 @@ use crate::{
     types::chat::*,
     utils::{links::extract_links, pubsub::Topic},
 };
-use jaq_core::val;
 pub use serenity::model::prelude as discord;
 use surrealdb::{RecordId, RecordIdKey};
 
-use chrono::{DateTime, Utc};
 
-use super::types::{Link, Service};
+use super::types::Service;
 
 impl Topic for Vec<MessageBundle> {}
 

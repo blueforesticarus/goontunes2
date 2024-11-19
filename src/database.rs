@@ -1,30 +1,18 @@
-use std::{
-    cell::OnceCell,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 
 use culpa::throws;
 use eyre::Error;
-use futures::lock::Mutex;
 use postage::{sink::Sink, stream::Stream};
 use rustyline_async::{Readline, ReadlineEvent};
 use serde::{Deserialize, Serialize};
 use surrealdb::{
     engine::any::{connect, Any},
     opt::auth::Root,
-    sql::Table,
-    Action, Notification, RecordId, Surreal,
+    sql::Table, RecordId, Surreal,
 };
 use tracing::info;
 
-use crate::{
-    types::{chat::Message, Link},
-    utils::{
-        links::extract_links,
-        synctron::Synctron,
-        when_even::{Bug, Loggable},
-    },
-};
+use crate::types::Link;
 
 static DATABASE: OnceLock<Database> = OnceLock::new();
 pub type MyDb = Arc<Surreal<Any>>;

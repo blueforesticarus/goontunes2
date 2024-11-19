@@ -1,9 +1,8 @@
-use std::{any::type_name, clone};
+use std::{any::type_name, fmt::Display};
 
 use color_eyre::owo_colors::OwoColorize;
 use config::Format;
 use itertools::Itertools;
-use kameo::Reply;
 use serde::{Deserialize, Serialize};
 
 // Config is another place a provider pattern AKA associative product types, would be good
@@ -68,6 +67,9 @@ pub struct ConfigCli {
     /// Overrides to config
     #[arg(short = 'J')]
     pub config_overrides2: Vec<String>,
+
+    #[arg(long)]
+    pub print_config: bool,
 }
 
 pub fn load(cc: ConfigCli) -> Result<AppConfig, eyre::Error> {
@@ -107,19 +109,36 @@ pub fn load(cc: ConfigCli) -> Result<AppConfig, eyre::Error> {
     for (d_type, d_path) in diffs.all_diffs() {
         // TODO this has bug where path shows 0 index for appened items
         let path = d_path.path.iter().map(ToString::to_string).join(".");
+        let oldv = d_path
+            .values
+            .map_or_else(|| d_path.resolve(&j), |v| Some(v.1))
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let newv = d_path
+            .values
+            .map_or_else(|| d_path.resolve(&old), |v| Some(v.0))
+            .map(ToString::to_string)
+            .unwrap_or_default();
+
         match d_type {
             json_diff_ng::DiffType::RootMismatch => todo!(),
             json_diff_ng::DiffType::LeftExtra => {
-                println!("+ {} {}", path, d_path.values.unwrap().0);
+                println!("+ {} {}", path, newv);
             }
             json_diff_ng::DiffType::RightExtra => {
-                println!("- {} {}", path, d_path.resolve(&old).unwrap());
+                println!("- {} {}", path, oldv);
             }
             json_diff_ng::DiffType::Mismatch => {
-                println!("+ {} {}", path, d_path.resolve(&j).unwrap());
-                println!("- {} {}", path, d_path.resolve(&old).unwrap());
+                println!("+ {} {}", path, newv);
+                println!("- {} {}", path, oldv);
             }
         }
+    }
+    let txt = serde_json::to_string_pretty(&j).unwrap();
+    if cc.print_config {
+        println!("-------CONFIG-------");
+        println!("{}", txt);
+        std::process::exit(0);
     }
 
     match serde_json::from_value::<AppConfig>(j.clone()) {
@@ -128,16 +147,17 @@ pub fn load(cc: ConfigCli) -> Result<AppConfig, eyre::Error> {
             return Ok(c);
         }
         Err(e) => {
-            println!("{}", serde_json::to_string_pretty(&j).unwrap());
+            println!("-------CONFIG-------");
+            println!("{}", txt);
+            println!("-------ERROR--------");
             panic!("{}", e);
         }
     };
 }
 
 fn process_jq(input: serde_json::Value, filter: String) -> serde_json::Value {
-    use jaq_core::{load, Compiler, Ctx, Error, Filter, FilterT, Native, RcIter};
+    use jaq_core::{load, Ctx, FilterT, RcIter};
     use jaq_json::Val;
-    use serde_json::{json, Value};
 
     let program = File {
         path: "".to_string(),
@@ -146,10 +166,10 @@ fn process_jq(input: serde_json::Value, filter: String) -> serde_json::Value {
 
     use load::{Arena, File, Loader};
 
-    let funcs = load::parse("def new(v): . += [{} | v];", |p| p.defs())
-        .unwrap()
-        .into_iter();
-    let loader = Loader::new(jaq_std::defs().chain(funcs));
+    // let funcs = load::parse("def new(v): . += [{} | v];", |p| p.defs())
+    //     .unwrap()
+    //     .into_iter();
+    let loader = Loader::new(jaq_std::defs()); //.chain(funcs));
     let arena = Arena::default();
 
     // parse the filter
@@ -164,6 +184,14 @@ fn process_jq(input: serde_json::Value, filter: String) -> serde_json::Value {
     let inputs = RcIter::new(core::iter::empty());
 
     // iterator over the output values
-    let mut out = filter.run((Ctx::new([], &inputs), Val::from(input)));
-    out.next().unwrap().unwrap().into()
+    let out: Vec<_> = filter
+        .run((Ctx::new([], &inputs), Val::from(input)))
+        .collect_vec();
+    for a in out.iter() {
+        match a {
+            Ok(v) => println!("{}", v),
+            Err(e) => println!("{}, {:#?}", e, e),
+        }
+    }
+    out.get(0).unwrap().clone().unwrap().into()
 }

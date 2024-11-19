@@ -59,7 +59,6 @@ impl PSBroker {
 
 #[cfg(test)]
 mod tests {
-    use std::slice::range;
     use std::time::Duration;
 
     use crate::utils::pubsub::PUBSUB;
@@ -67,18 +66,9 @@ mod tests {
     use futures::SinkExt;
     use futures::{channel::mpsc, StreamExt};
     use kameo::{
-        error::SendError,
-        mailbox::{
-            bounded::{BoundedMailbox, BoundedMailboxReceiver},
-            unbounded::UnboundedMailbox,
-        },
-        message::{Context, Message},
+        mailbox::bounded::BoundedMailbox,
         messages,
-        request::{
-            BlockingMessageSend, MessageSend, MessageSendSync, TryBlockingMessageSend,
-            TryMessageSend, TryMessageSendSync,
-        },
-        spawn, Actor,
+        request::MessageSend, Actor,
     };
 
     #[tokio::test]

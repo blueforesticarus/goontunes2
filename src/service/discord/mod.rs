@@ -1,24 +1,16 @@
-use std::{collections::HashMap, sync::OnceLock, thread::JoinHandle};
+use std::{collections::HashMap, sync::OnceLock};
 
-use chrono::{Duration, DurationRound};
-use db::MessageIdDatetimeBundle;
-use futures::{stream::FuturesUnordered, Sink, Stream, StreamExt};
+use chrono::Duration;
+use futures::{stream::FuturesUnordered, StreamExt};
 use itertools::Itertools;
 use kameo::{actor::ActorRef, error::BoxError, messages, request::MessageSendSync};
-use serenity::{
-    all::{CacheHttp, ChannelId, Context, GetMessages, Message, MessageId},
-    http::Http,
-};
-use tokio::sync::{Semaphore, SemaphorePermit};
+use serenity::all::{CacheHttp, ChannelId, Context, GetMessages, Message, MessageId};
 use tracing::{instrument, Instrument};
-use types::{chat::MessageBundle, Link};
+use types::chat::MessageBundle;
 
 use crate::{
     prelude::*,
-    utils::{
-        links::{self, extract_links},
-        pubsub::PUBSUB,
-    },
+    utils::pubsub::PUBSUB,
 };
 
 mod convert;
@@ -273,9 +265,9 @@ async fn parallel_message_history_scan(
                     leases[id].density /= 2.0;
                 }
 
-                let remaining = (leases[id].end - ts);
+                let remaining = leases[id].end - ts;
                 let remaining = remaining.num_minutes() as f32;
-                leases[id].remaining = (remaining / leases[id].density);
+                leases[id].remaining = remaining / leases[id].density;
 
                 leases[id].current = newest;
             }

@@ -1,15 +1,6 @@
 use eyre::ContextCompat;
-use serenity::all::{ChannelId, GetMessages, Http};
-use serenity::Client;
 
-use crate::prelude::*;
 
-use crate::service::discord::db::add_message;
-use crate::service::discord::{
-    db::{add_channel, add_guild, get_last_message_for_channel},
-    Module,
-};
-use crate::utils::when_even::Ignoreable;
 
 use kameo::actor::ActorRef;
 use parking_lot::Mutex;
@@ -70,7 +61,7 @@ impl EventHandler for Handler {
     //
     // In this case, just print what the current user's username is.
     async fn ready(&self, ctx: Context, _ready: Ready) {
-        let mut g = self.ready_tx.lock().try_send(ctx).unwrap();
+        let g = self.ready_tx.lock().try_send(ctx).unwrap();
         info!("discord connected");
     }
 

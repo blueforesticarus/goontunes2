@@ -1,11 +1,6 @@
 use eyre::ContextCompat;
-use surrealdb::{
-    opt::IntoQuery,
-    sql::{self, statements::UpdateStatement, subquery},
-    RecordId,
-};
+use surrealdb::RecordId;
 use tracing::instrument;
-use tracing_subscriber::fmt::format;
 
 use crate::prelude::*;
 

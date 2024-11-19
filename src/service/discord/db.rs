@@ -6,9 +6,9 @@ use crate::{prelude::*, service::discord::convert::ToSurreal};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serenity::model::prelude as discord;
-use surrealdb::{RecordId, Value};
+use surrealdb::RecordId;
 
-use crate::database::{Database, MyDb};
+use crate::database::MyDb;
 
 use eyre::Error;
 

@@ -1,35 +1,25 @@
 #![feature(try_blocks)]
-use std::{path::PathBuf, str::FromStr, time::Duration};
+use std::{path::PathBuf, str::FromStr};
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
 use culpa::throws;
 use derive_new::new;
 use eyre::Result;
 use goontunes::{
     config::{AppConfig, ConfigCli},
-    database,
     service::{
         self,
         discord::{self, ScanSince},
-        matrix,
         spotify::{self, FetchPlaylist, FetchThing, Init},
     },
     types::{self, chat::MessageBundle},
-    utils::{
-        links,
-        pubsub::PUBSUB,
-        when_even::{with, WithContext},
-    },
+    utils::pubsub::PUBSUB,
 };
-use kameo::{actor::ActorRef, message::Message, request::MessageSend, Actor};
+use kameo::{actor::ActorRef, message::Message, Actor};
 use serenity::all::ChannelId;
-use tracing::{info, instrument, trace, Level};
-use tracing_subscriber::{
-    filter::{self, Targets},
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    Layer,
-};
+use tracing::{info, instrument};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
 #[derive(Debug, Clone, Parser)]
 struct Cli {
@@ -38,6 +28,9 @@ struct Cli {
 
     #[clap(short, long)]
     reset: bool,
+
+    #[clap(long, value_enum)]
+    generate_completions: Option<clap_complete::Shell>,
 
     /// disable tracing
     #[clap(short, long, action)]
@@ -167,10 +160,20 @@ impl Message<Vec<MessageBundle>> for CoreActor {
         }
     }
 }
+fn print_completions<G: clap_complete::Generator>(gen: G, cmd: &mut clap::Command) {
+    generate(gen, cmd, cmd.get_name().to_string(), &mut std::io::stdout());
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
+
+    if let Some(g) = cli.generate_completions {
+        print_completions(g, &mut Cli::command());
+        std::process::exit(0);
+    }
 
     //TODO write pull request https://gitlab.com/ijackson/rust-shellexpand/-/issues/8
     let path: PathBuf = shellexpand::path::tilde(&cli.config.config_path).into();

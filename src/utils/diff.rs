@@ -115,7 +115,7 @@ func (self *ServicePlaylist) Update(p *Playlist) error {
  */
 
 use itertools::Itertools;
-use similar::{algorithms::IdentifyDistinct, capture_diff, capture_diff_deadline};
+use similar::{algorithms::IdentifyDistinct, capture_diff};
 
 #[derive(Debug, Clone, Copy)]
 /// Configures how playlist updates are sequenced

@@ -1,48 +1,41 @@
 use std::{
-    cell::OnceCell,
     collections::{HashSet, VecDeque},
     fmt::Debug,
     hash::Hash,
     ops::Deref,
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU64, AtomicUsize},
-        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize},
+        Arc,
     },
     time::Duration,
 };
 
-use chrono::Utc;
 use culpa::throws;
-use eyre::{bail, Context};
-use fetcher::{depageinate_album, depageinate_playlist, depageinate_playlist_fast};
-use futures::{future::join_all, sink::drain, FutureExt, SinkExt};
+use eyre::Context;
+use fetcher::{depageinate_album, depageinate_playlist_fast};
+use futures::{FutureExt, SinkExt};
 use itertools::Itertools;
 use kameo::{
-    actor::{self, ActorRef, PreparedActor},
+    actor::{ActorRef},
     error::BoxError,
-    request::{MessageSend, TryMessageSend, TryMessageSendSync},
+    request::{MessageSend, TryMessageSendSync},
 };
 use parking_lot::{Mutex, RwLock};
 use rspotify::{
     http::HttpError,
     model::{
-        album, parse_uri, track, AlbumId, FullAlbum, FullPlaylist, FullTrack, Id, Page,
-        PlayableItem, PlaylistId, PlaylistItem, PlaylistTracksRef, TrackId, Type,
+        parse_uri, AlbumId, FullAlbum, FullPlaylist, FullTrack, Id,
+        PlayableItem, PlaylistId, TrackId, Type,
     },
     prelude::BaseClient,
     AuthCodeSpotify, ClientError, ClientResult,
 };
-use serenity::model::id;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     time::Instant,
 };
-use tracing::{info, instrument};
+use tracing::instrument;
 
-use crate::{
-    prelude::{Bug, Loggable},
-    utils::when_even::OnError,
-};
 
 mod db;
 mod fetcher;
@@ -397,7 +390,7 @@ impl Conn {
 
     #[tracing::instrument(skip_all)]
     async fn playlist_sync(
-        mut self,
+        self,
         id: PlaylistId<'static>,
         snapshot: Option<String>,
         tracks: Vec<PlayableItem>,
