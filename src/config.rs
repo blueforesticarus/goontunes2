@@ -1,5 +1,6 @@
-use std::any::type_name;
+use std::{any::type_name, clone};
 
+use color_eyre::owo_colors::OwoColorize;
 use config::Format;
 use itertools::Itertools;
 use kameo::Reply;
@@ -99,18 +100,42 @@ pub fn load(cc: ConfigCli) -> Result<AppConfig, eyre::Error> {
         j = process_jq(j.clone(), o);
     }
 
-    let diff = serde_json_diff::values(old, j.clone());
-    dbg!(diff);
+    // if let Some(diff) = serde_json_diff::values(j.clone(), old) {
+    //     dbg!(diff);
+    // }
+    let diffs = json_diff_ng::compare_serde_values(&j, &old, true, &[]).unwrap();
+    for (d_type, d_path) in diffs.all_diffs() {
+        // TODO this has bug where path shows 0 index for appened items
+        let path = d_path.path.iter().map(ToString::to_string).join(".");
+        match d_type {
+            json_diff_ng::DiffType::RootMismatch => todo!(),
+            json_diff_ng::DiffType::LeftExtra => {
+                println!("+ {} {}", path, d_path.values.unwrap().0);
+            }
+            json_diff_ng::DiffType::RightExtra => {
+                println!("- {} {}", path, d_path.resolve(&old).unwrap());
+            }
+            json_diff_ng::DiffType::Mismatch => {
+                println!("+ {} {}", path, d_path.resolve(&j).unwrap());
+                println!("- {} {}", path, d_path.resolve(&old).unwrap());
+            }
+        }
+    }
 
-    let c: AppConfig = serde_json::from_value(j).unwrap();
-
-    dbg!(&c);
-
-    Ok(c)
+    match serde_json::from_value::<AppConfig>(j.clone()) {
+        Ok(c) => {
+            dbg!(&c);
+            return Ok(c);
+        }
+        Err(e) => {
+            println!("{}", serde_json::to_string_pretty(&j).unwrap());
+            panic!("{}", e);
+        }
+    };
 }
 
 fn process_jq(input: serde_json::Value, filter: String) -> serde_json::Value {
-    use jaq_core::{load, Compiler, Ctx, Error, FilterT, Native, RcIter};
+    use jaq_core::{load, Compiler, Ctx, Error, Filter, FilterT, Native, RcIter};
     use jaq_json::Val;
     use serde_json::{json, Value};
 
@@ -121,10 +146,10 @@ fn process_jq(input: serde_json::Value, filter: String) -> serde_json::Value {
 
     use load::{Arena, File, Loader};
 
-    // start out only from core filters,
-    // which do not include filters in the standard library
-    // such as `map`, `select` etc.
-    let loader = Loader::new(jaq_std::defs());
+    let funcs = load::parse("def new(v): . += [{} | v];", |p| p.defs())
+        .unwrap()
+        .into_iter();
+    let loader = Loader::new(jaq_std::defs().chain(funcs));
     let arena = Arena::default();
 
     // parse the filter
@@ -132,7 +157,7 @@ fn process_jq(input: serde_json::Value, filter: String) -> serde_json::Value {
 
     // compile the filter
     let filter = jaq_core::Compiler::default()
-        .with_funs(jaq_std::funs())
+        .with_funs(jaq_std::funs().chain(jaq_json::funs()))
         .compile(modules)
         .unwrap();
 

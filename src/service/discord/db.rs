@@ -1,4 +1,5 @@
 use crate::types::chat::*;
+use crate::types::Service;
 use crate::utils::links::extract_links;
 use crate::{prelude::*, service::discord::convert::ToSurreal};
 

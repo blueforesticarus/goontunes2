@@ -61,14 +61,21 @@
 
 // IDEA: cache and client methods to lift ID into object
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, DeserializeFromStr, SerializeDisplay,
+)]
+#[strum(ascii_case_insensitive)]
+#[strum(serialize_all = "lowercase")]
+pub enum Service {
+    Discord,
+    Matrix,
+    Spotify,
+    Youtube,
+    Soundcloud,
+}
+
 pub mod chat {
     use super::*;
-
-    #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-    pub enum Service {
-        Discord,
-        Matrix,
-    }
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct User {
@@ -108,23 +115,14 @@ pub mod chat {
 
 pub mod music {
     use super::*;
-
-    #[derive(
-        Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, DeserializeFromStr, SerializeDisplay,
-    )]
-    #[strum(ascii_case_insensitive)]
-    #[strum(serialize_all = "lowercase")]
-    pub enum Service {
-        Spotify,
-        Youtube,
-        Soundcloud,
-    }
 }
 
 pub struct _Link;
 
 // group of users across chat platforms
 pub struct _Person;
+
+use std::marker::PhantomData;
 
 use chrono::{DateTime, Utc};
 use derivative::Derivative;
@@ -138,7 +136,7 @@ use url::Url;
 #[derive(Derivative, Clone, Deserialize, Serialize)]
 #[derivative(Debug)]
 pub struct Link {
-    pub service: music::Service,
+    pub service: Service,
     pub id: String,
     pub kind: Option<Kind>,
 
@@ -173,4 +171,11 @@ pub enum Kind {
     Track,
     Playlist,
     User,
+}
+
+pub struct Id<T = ()> {
+    domain: Option<Service>,
+    kind: Option<Kind>,
+    id: String,
+    _phantom_data: PhantomData<T>,
 }

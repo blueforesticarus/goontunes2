@@ -13,7 +13,7 @@ use surrealdb::{RecordId, RecordIdKey};
 
 use chrono::{DateTime, Utc};
 
-use super::types::Link;
+use super::types::{Link, Service};
 
 impl Topic for Vec<MessageBundle> {}
 

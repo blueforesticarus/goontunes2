@@ -1,3 +1,4 @@
+#![feature(try_blocks)]
 use std::{path::PathBuf, str::FromStr, time::Duration};
 
 use clap::Parser;
@@ -13,10 +14,7 @@ use goontunes::{
         matrix,
         spotify::{self, FetchPlaylist, FetchThing, Init},
     },
-    types::{
-        self,
-        chat::{MessageBundle, Service},
-    },
+    types::{self, chat::MessageBundle},
     utils::{
         links,
         pubsub::PUBSUB,
@@ -30,6 +28,7 @@ use tracing_subscriber::{
     filter::{self, Targets},
     layer::SubscriberExt,
     util::SubscriberInitExt,
+    Layer,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -40,13 +39,16 @@ struct Cli {
     #[clap(short, long)]
     reset: bool,
 
-    /// Enable verbose logging output.
+    /// disable tracing
     #[clap(short, long, action)]
-    verbose: bool,
+    quiet: bool,
 
-    /// Enable verbose logging output.
+    /// Enable venator tracing consumer
     #[clap(long, action)]
     venator: bool,
+
+    #[clap(long)]
+    get: Vec<String>,
 }
 
 #[derive(new)]
@@ -54,6 +56,7 @@ struct CoreActor {
     #[new(default)]
     this: Init<ActorRef<Self>>,
     config: AppConfig,
+    cli: Cli,
 
     #[new(default)]
     spotify: Option<ActorRef<spotify::Module>>,
@@ -99,6 +102,27 @@ impl kameo::Actor for CoreActor {
             }
         }
 
+        // TODO commands are simply actor messages
+        for thing in self.cli.get.iter() {
+            let thing = self
+                .config
+                .playlists
+                .iter()
+                .find(|pl| pl.name.as_ref().map(|s| s.to_lowercase()) == Some(thing.to_lowercase()))
+                .map(|pl| pl.id.clone().unwrap())
+                .unwrap_or(thing.clone());
+
+            dbg!(&thing);
+            let _: Option<()> = try {
+                let _ = &self
+                    .spotify
+                    .as_ref()?
+                    .tell(FetchPlaylist { id: thing.clone() })
+                    .await
+                    .unwrap();
+            };
+        }
+
         // for pl in self.config.playlists.iter() {
         //     if let Some(id) = &pl.id {
         //         dbg!(&id);
@@ -130,7 +154,7 @@ impl Message<Vec<MessageBundle>> for CoreActor {
 
         for msg in msg {
             for link in msg.links {
-                if link.service == types::music::Service::Spotify {
+                if link.service == types::Service::Spotify {
                     // Really this should be batched
                     if let Some(r) = &self.spotify {
                         r.tell(FetchThing { id: link.id }).await.unwrap();
@@ -151,27 +175,29 @@ async fn main() -> Result<()> {
     //TODO write pull request https://gitlab.com/ijackson/rust-shellexpand/-/issues/8
     let path: PathBuf = shellexpand::path::tilde(&cli.config.config_path).into();
 
-    let config = goontunes::config::load(cli.config).unwrap();
+    let config = goontunes::config::load(cli.config.clone()).unwrap();
 
     //TODO standardize
-    if cli.venator {
-        venator::Venator::builder()
-            .with_host("0.0.0.0:8362")
-            .with_attribute("service", "goontunes")
-            .with_attribute("environment", "dev")
-            .build()
-            .install();
-    } else if cli.verbose {
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer())
-            .with(tracing_subscriber::EnvFilter::from_default_env())
-            //.with(Targets::new().with_target("matrix_sdk_crypto", Level::WARN))
-            .init();
+    tracing_subscriber::registry()
+        .with(cli.venator.then(|| {
+            venator::Venator::builder()
+                .with_host("0.0.0.0:8362")
+                .with_attribute("service", "goontunes")
+                .with_attribute("environment", "dev")
+                .build()
+        }))
+        .with((!cli.quiet).then(|| {
+            tracing_subscriber::fmt::layer()
+                .with_filter(tracing_subscriber::EnvFilter::from_default_env())
+        }))
+        // .with(cli.tokio_console.then(|| console_subscriber::init()))
+        .init();
 
-        info!("initialized tracing");
-    }
+    info!("initialized tracing");
 
-    kameo::actor::prepare(CoreActor::new(config)).run().await;
+    kameo::actor::prepare(CoreActor::new(config, cli))
+        .run()
+        .await;
 
     Ok(())
 }

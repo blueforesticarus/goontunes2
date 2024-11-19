@@ -4,7 +4,7 @@ use regex::Regex;
 
 use url::Url;
 
-use crate::types::{music::Service, Link};
+use crate::types::{Link, Service};
 
 pub fn extract_links(content: &str) -> Vec<Link> {
     extract_urls(content)

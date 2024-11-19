@@ -82,7 +82,7 @@ impl Module {
         #[derive(Debug, Serialize, Deserialize)]
         struct MessageBundle {
             id: Thing,
-            service: crate::types::chat::Service,
+            service: crate::types::Service,
             message: crate::types::chat::Message,
             user: Thing,
             channel: Thing,
@@ -91,7 +91,7 @@ impl Module {
 
         let message = MessageBundle {
             id: Thing::from(("message".to_string(), event.event_id.to_string())),
-            service: types::chat::Service::Matrix,
+            service: types::Service::Matrix,
             message: crate::types::chat::Message {
                 text: event.content.body().to_string(),
                 timestamp: DateTime::from(event.origin_server_ts.to_system_time().unwrap()),
@@ -223,10 +223,7 @@ impl Module {
             return room;
         }
 
-        self.client()
-            .join_room_by_id(room_id)
-            .await
-            .log::<Bug>();
+        self.client().join_room_by_id(room_id).await.log::<Bug>();
         tokio::time::sleep(Duration::from_millis(100)).await; // I have no reason to assume this is needed, but I don't feel like debugging
 
         // XXX idk if this works

@@ -11,10 +11,11 @@ use std::{
     time::Duration,
 };
 
+use chrono::Utc;
 use culpa::throws;
 use eyre::{bail, Context};
 use fetcher::{depageinate_album, depageinate_playlist, depageinate_playlist_fast};
-use futures::future::join_all;
+use futures::{future::join_all, sink::drain, FutureExt, SinkExt};
 use itertools::Itertools;
 use kameo::{
     actor::{self, ActorRef, PreparedActor},
@@ -25,8 +26,8 @@ use parking_lot::{Mutex, RwLock};
 use rspotify::{
     http::HttpError,
     model::{
-        album, parse_uri, track, AlbumId, FullAlbum, FullPlaylist, FullTrack, Id, PlayableItem,
-        PlaylistId, PlaylistTracksRef, TrackId, Type,
+        album, parse_uri, track, AlbumId, FullAlbum, FullPlaylist, FullTrack, Id, Page,
+        PlayableItem, PlaylistId, PlaylistItem, PlaylistTracksRef, TrackId, Type,
     },
     prelude::BaseClient,
     AuthCodeSpotify, ClientError, ClientResult,
@@ -212,15 +213,19 @@ impl Module {
     }
 
     pub fn priotity(&mut self) -> Option<ReqTypes> {
+        // TODO
         // With this method how to prioritize?
         // reserve one connection for each request type
         // then prioritze playlists
         // then prioritze full batches
         // then prioritze
-        if self.album_q.ready() > 0 {
+        let ready = self.album_q.ready();
+        if ready > 0 && self.album_q.in_flight() == 0 || ready >= MAX_ALBUMS {
             return Some(ReqTypes::Album);
         }
-        if self.track_q.ready() > 0 {
+
+        let ready = self.track_q.ready();
+        if ready > 0 && self.track_q.in_flight() == 0 || ready >= MAX_TRACKS {
             return Some(ReqTypes::Track);
         }
         None
@@ -320,20 +325,23 @@ impl Conn {
         // depaginate tracks
         {
             // Really this should get splintered off into seperate sub connections
+            let mut counter = 0;
             for a in albums.iter_mut() {
                 if a.tracks.total as usize > a.tracks.items.len() {
+                    counter += 1;
                     depageinate_album(&self.client, &self.ratelimiter, a)
                         .await
                         .unwrap();
                 }
             }
+            tracing::info!("depaginate_done on {} albums", counter)
         }
 
+        tracing::info!(n = albums.len(), "fetched albums");
         let data = albums
             .into_iter()
             .map(|a| SpotifyThing::Album(a))
             .collect_vec();
-
         self.return_data(data).await;
     }
 
@@ -351,6 +359,7 @@ impl Conn {
             .unwrap();
         self.c = None; // drop lease
 
+        tracing::info!(n = tracks.len(), "fetched tracks");
         let data = tracks
             .into_iter()
             .map(|t| SpotifyThing::Track(t))
@@ -372,10 +381,15 @@ impl Conn {
         if snapshot.as_ref() != Some(&pl.snapshot_id)
             && pl.tracks.total as usize > pl.tracks.items.len()
         {
-            depageinate_playlist_fast(&self.client, &self.ratelimiter, &mut pl)
-                .await
-                .unwrap();
+            depageinate_playlist_fast(&self.client, &self.ratelimiter, &mut pl, async |a| {
+                tracing::info!("page {} / {}", a.offset, a.total);
+            })
+            .await
+            .unwrap();
+            tracing::info!("depaginating DONE");
         }
+
+        tracing::info!(n = pl.tracks.items.len(), "fetched tracks");
 
         let data = SpotifyThing::Playlist(pl);
         self.return_data(vec![data]).await;
@@ -466,6 +480,10 @@ struct Queue<T> {
 }
 
 impl<T: Clone + PartialEq + Debug + Hash + Eq> Queue<T> {
+    fn in_flight(&self) -> usize {
+        self.data.read().iter().filter_map(|f| f.req).count()
+    }
+
     fn add_unique(&self, v: impl IntoIterator<Item = T>) {
         let mut guard = self.data.write();
         let mut keys: HashSet<T> = guard.iter().map(|v| v.id.clone()).collect();
@@ -576,7 +594,7 @@ pub struct RateLimiter {
 impl Default for RateLimiter {
     fn default() -> Self {
         Self {
-            connections: Semaphore::new(10).into(),
+            connections: Semaphore::new(4).into(),
             sleep_until: Default::default(),
             revoked_count: Default::default(),
         }
@@ -629,6 +647,7 @@ impl RateLimiter {
                     Some(mut t) => {
                         let extra = (count - 1).max(1) as f32 / 2.0 + rand::random::<f32>();
                         t += Duration::from_secs_f32(extra);
+
                         tokio::time::sleep_until(t).await
                     }
                     None => {}
@@ -682,6 +701,11 @@ impl RateLimiter {
 
             tracing::warn!(RetryAfter = n, "RATE LIMIT [{}]", count);
             count += 1;
+
+            if n > 30.0 {
+                // TODO handle better, I got maxint once
+                panic!("BAD RATE LIMIT");
+            }
 
             if count >= MAX_TRIES || !retry {
                 tracing::error!("RATE LIMIT [{}] abort", count);

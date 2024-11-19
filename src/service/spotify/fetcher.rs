@@ -1,20 +1,23 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fmt::Debug,
+    future::Future,
+    process::Output,
     sync::Arc,
 };
 
 use async_condvar_fair::Condvar;
-use chrono::{Local, Utc};
+use chrono::{format::Item, Local, Utc};
 use culpa::{throw, throws};
 use eyre::Error;
-use futures::future::join_all;
+use futures::{future::join_all, stream::FuturesUnordered, FutureExt, Sink, SinkExt, StreamExt};
 use itertools::Itertools;
 use parking_lot::Mutex;
 use rspotify::{
     clients::{pagination::paginate, BaseClient},
     model::{
         album, AlbumId, FullAlbum, FullPlaylist, FullTrack, ItemPositions, Page, PlayableId,
-        PlayableItem, PlaylistId, PlaylistItem, TrackId,
+        PlayableItem, PlaylistId, PlaylistItem, SimplifiedTrack, TrackId,
     },
     prelude::OAuthClient,
     AuthCodeSpotify, DEFAULT_PAGINATION_CHUNKS,
@@ -90,7 +93,54 @@ pub async fn depageinate_album(
 }
 
 #[throws(eyre::Error)]
-#[tracing::instrument("paginate", skip_all)]
+#[tracing::instrument(skip_all)]
+pub async fn depageinate_album_fast<Fut>(
+    client: &AuthCodeSpotify,
+    ratelimiter: &RateLimiter,
+    album: &mut FullAlbum,
+    update: impl Fn(Page<SimplifiedTrack>) -> Fut,
+) where
+    Fut: Future<Output = ()>,
+{
+    // TODO feed data in real time
+    if album.tracks.next.is_some() {
+        let mut pages = vec![];
+        let mut offset = album.tracks.offset;
+        let mut ts = FuturesUnordered::new();
+        while offset < album.tracks.total {
+            // EDIT: refactored so lease is dropped as soon as connection is finished
+            // let needs_lease = !ts.is_empty(); //first task reuses future from the client
+            let id = album.id.clone();
+            let f = ratelimiter.with_rate_limit_acquired(move || {
+                client.album_track_manual(
+                    id.clone(),
+                    None,
+                    Some(DEFAULT_PAGINATION_CHUNKS),
+                    Some(offset),
+                )
+            });
+
+            ts.push(f);
+            offset += DEFAULT_PAGINATION_CHUNKS;
+        }
+
+        while let Some(page) = ts.next().await {
+            let page = page?;
+            update(page.clone()).await;
+            pages.push(page);
+        }
+
+        // Fill in the page
+        pages.sort_by_key(|f| f.offset);
+        for page in pages {
+            assert_eq!(album.tracks.items.len(), page.offset as usize);
+            album.tracks.items.extend(page.items);
+        }
+    }
+}
+
+#[throws(eyre::Error)]
+#[tracing::instrument(skip_all)]
 pub async fn depageinate_playlist(
     client: &AuthCodeSpotify,
     ratelimiter: &RateLimiter,
@@ -128,16 +178,20 @@ pub async fn depageinate_playlist(
 
 #[throws(eyre::Error)]
 #[tracing::instrument("paginate", skip_all)]
-pub async fn depageinate_playlist_fast(
+pub async fn depageinate_playlist_fast<Fut>(
     client: &AuthCodeSpotify,
     ratelimiter: &RateLimiter,
     pl: &mut FullPlaylist,
-) {
+    // mut update: impl Sink<Page<PlaylistItem>, Error: Debug> + std::marker::Unpin,
+    update: impl Fn(Page<PlaylistItem>) -> Fut,
+) where
+    Fut: Future<Output = ()>,
+{
     // TODO feed data in real time
-
     if pl.tracks.next.is_some() {
-        let mut offset = pl.tracks.offset;
-        let mut ts = vec![];
+        let mut pages = vec![];
+        let mut offset = pl.tracks.offset + pl.tracks.items.len() as u32;
+        let mut ts = FuturesUnordered::new();
         while offset < pl.tracks.total {
             // EDIT: refactored so lease is dropped as soon as connection is finished
             // let needs_lease = !ts.is_empty(); //first task reuses future from the client
@@ -156,8 +210,18 @@ pub async fn depageinate_playlist_fast(
             offset += DEFAULT_PAGINATION_CHUNKS;
         }
 
-        for page in join_all(ts).await {
-            pl.tracks.items.extend(page.unwrap().items);
+        while let Some(page) = ts.next().await {
+            let page = page?;
+            // update.send(page.clone()).await.unwrap();
+            update(page.clone()).await;
+            pages.push(page);
+        }
+
+        // Fill in the page
+        pages.sort_by_key(|f| f.offset);
+        for page in pages {
+            assert_eq!(pl.tracks.items.len(), page.offset as usize);
+            pl.tracks.items.extend(page.items);
         }
     }
 }

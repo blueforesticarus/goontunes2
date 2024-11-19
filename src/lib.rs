@@ -2,7 +2,7 @@
 #![feature(associated_type_defaults)]
 #![feature(try_blocks)]
 #![feature(extract_if)]
-
+#![feature(async_closure)]
 //pub mod config;
 pub mod database;
 //pub use database::types;
