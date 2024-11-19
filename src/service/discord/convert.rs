@@ -3,9 +3,34 @@
 // common datatype could be a trait defined for each chat module's types or a struct with into defined.
 // but really, we need a common struct, unfortionately
 
-use crate::types::chat::*;
+use crate::{
+    types::chat::*,
+    utils::{links::extract_links, pubsub::Topic},
+};
+use jaq_core::val;
 pub use serenity::model::prelude as discord;
 use surrealdb::{RecordId, RecordIdKey};
+
+use chrono::{DateTime, Utc};
+
+use super::types::Link;
+
+impl Topic for Vec<MessageBundle> {}
+
+impl From<&discord::Message> for MessageBundle {
+    fn from(value: &discord::Message) -> Self {
+        Self {
+            service: Service::Discord,
+            id: value.id.to_string(),
+            timestamp: value.timestamp.to_utc(),
+            content: value.content.clone(),
+            links: extract_links(&value.content),
+            username: value.author.name.clone(),
+            user_id: value.author.id.to_string(),
+            channel_id: value.channel_id.to_string(),
+        }
+    }
+}
 
 impl From<&discord::Message> for Message {
     fn from(value: &discord::Message) -> Self {

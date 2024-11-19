@@ -64,7 +64,7 @@
 pub mod chat {
     use super::*;
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
     pub enum Service {
         Discord,
         Matrix,
@@ -89,6 +89,20 @@ pub mod chat {
     pub struct Message {
         pub text: String,
         pub timestamp: DateTime<Utc>,
+    }
+    #[derive(Debug, Clone)]
+    pub struct MessageBundle {
+        pub service: Service,
+
+        pub id: String,
+        pub timestamp: DateTime<Utc>,
+        pub content: String,
+        pub links: Vec<Link>,
+
+        pub username: String,
+        pub user_id: String,
+
+        pub channel_id: String,
     }
 }
 

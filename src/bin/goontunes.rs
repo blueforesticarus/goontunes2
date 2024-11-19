@@ -1,18 +1,31 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, str::FromStr, time::Duration};
 
 use clap::Parser;
+use culpa::throws;
+use derive_new::new;
 use eyre::Result;
 use goontunes::{
     config::{AppConfig, ConfigCli},
     database,
     service::{
-        self, discord, matrix,
-        spotify::{self, FetchPlaylist, FetchThing},
+        self,
+        discord::{self, ScanSince},
+        matrix,
+        spotify::{self, FetchPlaylist, FetchThing, Init},
     },
-    utils::when_even::{with, WithContext},
+    types::{
+        self,
+        chat::{MessageBundle, Service},
+    },
+    utils::{
+        links,
+        pubsub::PUBSUB,
+        when_even::{with, WithContext},
+    },
 };
-use kameo::request::MessageSend;
-use tracing::{info, trace, Level};
+use kameo::{actor::ActorRef, message::Message, request::MessageSend, Actor};
+use serenity::all::ChannelId;
+use tracing::{info, instrument, trace, Level};
 use tracing_subscriber::{
     filter::{self, Targets},
     layer::SubscriberExt,
@@ -36,6 +49,101 @@ struct Cli {
     venator: bool,
 }
 
+#[derive(new)]
+struct CoreActor {
+    #[new(default)]
+    this: Init<ActorRef<Self>>,
+    config: AppConfig,
+
+    #[new(default)]
+    spotify: Option<ActorRef<spotify::Module>>,
+    #[new(default)]
+    discord: Option<ActorRef<discord::Module>>,
+}
+
+impl kameo::Actor for CoreActor {
+    type Mailbox = kameo::mailbox::unbounded::UnboundedMailbox<Self>;
+
+    #[throws(kameo::error::BoxError)]
+    #[instrument(skip_all, err)]
+    async fn on_start(&mut self, actor_ref: ActorRef<Self>) {
+        self.this.set(actor_ref);
+
+        // So the hazard of this method is that this must be set up FIRST
+        // or else we could drop things
+        PUBSUB
+            .subscribe::<Vec<MessageBundle>, _>(self.this.get().clone())
+            .await
+            .unwrap();
+
+        if let Some(conf) = self.config.spotify.get() {
+            // TODO I don't like that it isn't a kameo function, wait for him to make prepare_with public
+            self.spotify = Some(crate::service::spotify::init_and_spawn(conf.clone()).await);
+        }
+
+        if let Some(conf) = self.config.discord.get() {
+            // TODO I don't like that it isn't a kameo function, wait for him to make prepare_with public
+            self.discord = Some(crate::service::discord::init_and_spawn(conf.clone()).await);
+
+            for channel_id in conf.channels.iter() {
+                let channel_id = ChannelId::from_str(channel_id).unwrap();
+
+                // TODO: this is not ergonomic
+                let _ = self
+                    .discord
+                    .as_ref()
+                    .unwrap()
+                    .tell(ScanSince { channel_id })
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // for pl in self.config.playlists.iter() {
+        //     if let Some(id) = &pl.id {
+        //         dbg!(&id);
+        //         let _ = actor_ref
+        //             .tell(FetchPlaylist { id: id.clone() })
+        //             .await
+        //             .unwrap();
+        //     }
+        // }
+    }
+}
+
+impl Message<Vec<MessageBundle>> for CoreActor {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        mut msg: Vec<MessageBundle>,
+        _ctx: kameo::message::Context<'_, Self, Self::Reply>,
+    ) -> Self::Reply {
+        if msg.len() == 1 {
+            tracing::info!("{:?}", msg);
+        } else {
+            tracing::info!("{} messages to process", msg.len());
+        }
+
+        msg.retain(|v| !v.links.is_empty());
+        tracing::info!("{} with links", msg.len());
+
+        for msg in msg {
+            for link in msg.links {
+                if link.service == types::music::Service::Spotify {
+                    // Really this should be batched
+                    if let Some(r) = &self.spotify {
+                        r.tell(FetchThing { id: link.id }).await.unwrap();
+                    } else {
+                        // TODO latching messages
+                        // tracing::info!("no_spotify")
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -46,7 +154,14 @@ async fn main() -> Result<()> {
     let config = goontunes::config::load(cli.config).unwrap();
 
     //TODO standardize
-    if cli.verbose {
+    if cli.venator {
+        venator::Venator::builder()
+            .with_host("0.0.0.0:8362")
+            .with_attribute("service", "goontunes")
+            .with_attribute("environment", "dev")
+            .build()
+            .install();
+    } else if cli.verbose {
         tracing_subscriber::registry()
             .with(tracing_subscriber::fmt::layer())
             .with(tracing_subscriber::EnvFilter::from_default_env())
@@ -55,26 +170,8 @@ async fn main() -> Result<()> {
 
         info!("initialized tracing");
     }
-    if cli.venator {
-        // venator::Venator::default().install()
-    }
 
-    // let db = database::init(config.database).await.unwrap();
-    // if cli.reset {
-    //     db.reset(vec!["message", "track", "album"]).await;
-    // }
-
-    if let Some(conf) = config.spotify {
-        let actor_ref = kameo::spawn(service::spotify::Actor::new(conf));
-        for pl in config.playlists {
-            if let Some(id) = pl.id {
-                dbg!(&id);
-                let _ = actor_ref.tell(FetchPlaylist { id }).send().await.unwrap();
-            }
-        }
-    }
-
-    tokio::time::sleep(Duration::MAX).await;
+    kameo::actor::prepare(CoreActor::new(config)).run().await;
 
     Ok(())
 }

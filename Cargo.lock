@@ -995,15 +995,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chumsky"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eebd66744a15ded14960ab4ccdbfb51ad3b81f51f3f04a80adac98c985396c9"
-dependencies = [
- "hashbrown 0.14.5",
-]
-
-[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1569,6 +1560,17 @@ version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa60999fb9292247d7c7eec5dada22b4ba337394612b0d935616bf49964c8bfd"
 dependencies = [
+ "quote",
+ "syn 2.0.87",
+]
+
+[[package]]
+name = "derive-new"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cdc8d50f426189eef89dac62fabfa0abb27d5cc008f25bf4156a0203325becc"
+dependencies = [
+ "proc-macro2",
  "quote",
  "syn 2.0.87",
 ]
@@ -2160,6 +2162,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2273,6 +2284,7 @@ dependencies = [
  "culpa",
  "derivative",
  "derive-name",
+ "derive-new",
  "derive-where",
  "derive_more",
  "dirs",
@@ -2281,9 +2293,10 @@ dependencies = [
  "eyre",
  "futures",
  "hostname",
- "itertools 0.12.1",
- "jaq-interpret",
- "jaq-parse",
+ "itertools 0.13.0",
+ "jaq-core",
+ "jaq-json",
+ "jaq-std",
  "kameo",
  "lazy_static",
  "linkify",
@@ -2311,8 +2324,10 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "type-map",
  "url",
  "uuid",
+ "venator",
 ]
 
 [[package]]
@@ -3008,37 +3023,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 
 [[package]]
-name = "jaq-interpret"
-version = "1.5.0"
+name = "jaq-core"
+version = "2.0.0-delta"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fe95ec3c24af3fd9f3dd1091593f5e49b003a66c496a8aa39d764d0a06ae17b"
+checksum = "d983a2119d0dcf600a7d39803d987a10f823aa2cd32c5c1f930f708ee05954a9"
+dependencies = [
+ "dyn-clone",
+ "once_cell",
+ "typed-arena",
+]
+
+[[package]]
+name = "jaq-json"
+version = "1.0.0-delta"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca0ea5e41932593c7f80e67afb3d6171514edb1c33fba2180737e814ffd4870d"
 dependencies = [
  "ahash 0.8.11",
- "dyn-clone",
  "hifijson",
  "indexmap 2.6.0",
- "jaq-syn",
- "once_cell",
+ "jaq-core",
+ "jaq-std",
  "serde_json",
 ]
 
 [[package]]
-name = "jaq-parse"
-version = "1.0.3"
+name = "jaq-std"
+version = "2.0.0-delta"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0346d7d3146cdda8acd929581f3d6626a332356c74d5c95aeaffaac2eb6dee82"
+checksum = "d4e7f68d2ee7d6d3d2a18e381dc77b9582b7d309d9b74d3a387f35f8ebf23cc0"
 dependencies = [
- "chumsky",
- "jaq-syn",
-]
-
-[[package]]
-name = "jaq-syn"
-version = "1.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ba44fe4428c71304604261ecbae047ee9cfb60c4f1a6bd222ebbb31726d3948"
-dependencies = [
- "serde",
+ "aho-corasick",
+ "base64 0.22.1",
+ "chrono",
+ "jaq-core",
+ "libm",
+ "log",
+ "regex-lite",
+ "urlencoding",
 ]
 
 [[package]]
@@ -3127,9 +3149,9 @@ dependencies = [
 
 [[package]]
 name = "kameo"
-version = "0.12.2"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94449a0728ce1ec7345496588007bec699c4b52c525159ede8830a6fc14dd4fa"
+checksum = "62237a96597618543798a36ec723eb75c5ac301e2690243fd600be1f5eb3dd2d"
 dependencies = [
  "dyn-clone",
  "futures",
@@ -3144,9 +3166,9 @@ dependencies = [
 
 [[package]]
 name = "kameo_macros"
-version = "0.12.2"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddec4971b183c643aa91d83f85effe39c7d27b2914a54b06a979cd87b13a79b7"
+checksum = "5bbbd8e8d7b02bc67eae0dcbdb82c0a71cc7cc61734059ee3e7439a1ee1e0e85"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -4863,6 +4885,12 @@ dependencies = [
  "memchr",
  "regex-syntax 0.8.5",
 ]
+
+[[package]]
+name = "regex-lite"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53a49587ad06b26609c52e423de037e7f57f20d53535d66e08c695f347df952a"
 
 [[package]]
 name = "regex-syntax"
@@ -6873,6 +6901,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "type-map"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "998e52cee7a8632763641718622de4fe22b125ae7cb93bc99ad4d1631d04af23"
+dependencies = [
+ "fxhash",
+]
+
+[[package]]
+name = "typed-arena"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
+
+[[package]]
 name = "typemap_rev"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7081,6 +7124,18 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "venator"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba528e927901c6390df0259f4876466b80eb1651a3c19ce179d0b222421a8480"
+dependencies = [
+ "bincode",
+ "serde",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "version_check"

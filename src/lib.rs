@@ -17,6 +17,7 @@ pub mod utils {
     pub mod diff;
     pub mod links;
     //pub mod takecell;
+    pub mod pubsub;
     pub mod synctron;
     pub mod when_even;
 }

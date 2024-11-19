@@ -64,6 +64,7 @@ pub fn parse_url(url: &Url) -> Option<Link> {
             Some(v) => {
                 entry.id = v.get(2).unwrap().as_str().to_string(); //??? should we convert to spotify:<type>:<id> format?
                 entry.kind = Some(v.get(1).unwrap().as_str().parse().unwrap());
+                entry.id = format!("spotify:{}:{}", entry.kind.unwrap().to_string(), &entry.id);
             }
             None => {
                 dbg!(url.to_string());

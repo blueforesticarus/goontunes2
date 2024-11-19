@@ -1,5 +1,8 @@
+use std::any::type_name;
+
 use config::Format;
 use itertools::Itertools;
+use kameo::Reply;
 use serde::{Deserialize, Serialize};
 
 // Config is another place a provider pattern AKA associative product types, would be good
@@ -10,9 +13,30 @@ pub struct AppConfig {
     pub playlists: Vec<PlaylistConfig>,
     pub database: crate::database::Config,
 
-    pub spotify: Option<crate::service::spotify::Config>,
-    pub discord: Option<crate::service::discord::Config>,
-    pub matrix: Option<crate::service::matrix::Config>,
+    pub spotify: ModuleConfig<crate::service::spotify::Config>,
+    pub discord: ModuleConfig<crate::service::discord::Config>,
+    pub matrix: ModuleConfig<crate::service::matrix::Config>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModuleConfig<T> {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub config: Option<T>,
+}
+
+impl<T: std::fmt::Debug> ModuleConfig<T> {
+    pub fn get(&self) -> Option<&T> {
+        if self.enabled {
+            Some(self.config.as_ref().expect(&format!(
+                "module enabled but no config {}",
+                type_name::<T>()
+            )))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -86,29 +110,35 @@ pub fn load(cc: ConfigCli) -> Result<AppConfig, eyre::Error> {
 }
 
 fn process_jq(input: serde_json::Value, filter: String) -> serde_json::Value {
-    use jaq_interpret::{Ctx, Error, FilterT, ParseCtx, RcIter, Val};
+    use jaq_core::{load, Compiler, Ctx, Error, FilterT, Native, RcIter};
+    use jaq_json::Val;
     use serde_json::{json, Value};
+
+    let program = File {
+        path: "".to_string(),
+        code: filter.as_str(),
+    };
+
+    use load::{Arena, File, Loader};
 
     // start out only from core filters,
     // which do not include filters in the standard library
     // such as `map`, `select` etc.
-    let mut defs = ParseCtx::new(Vec::new());
+    let loader = Loader::new(jaq_std::defs());
+    let arena = Arena::default();
 
     // parse the filter
-    let (f, errs) = jaq_parse::parse(&filter, jaq_parse::main());
-    assert!(errs.is_empty(), "{:?}", errs);
+    let modules = loader.load(&arena, program).unwrap();
 
-    // compile the filter in the context of the given definitions
-    let f = defs.compile(f.unwrap());
-    assert!(defs.errs.is_empty());
+    // compile the filter
+    let filter = jaq_core::Compiler::default()
+        .with_funs(jaq_std::funs())
+        .compile(modules)
+        .unwrap();
 
     let inputs = RcIter::new(core::iter::empty());
 
     // iterator over the output values
-    let out = f
-        .run((Ctx::new([], &inputs), Val::from(input)))
-        .collect_vec();
-
-    assert!(out.len() == 1);
-    out[0].clone().unwrap().into()
+    let mut out = filter.run((Ctx::new([], &inputs), Val::from(input)));
+    out.next().unwrap().unwrap().into()
 }

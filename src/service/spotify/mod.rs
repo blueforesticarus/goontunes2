@@ -12,12 +12,12 @@ use std::{
 };
 
 use culpa::throws;
-use eyre::bail;
+use eyre::{bail, Context};
 use fetcher::{depageinate_album, depageinate_playlist, depageinate_playlist_fast};
 use futures::future::join_all;
 use itertools::Itertools;
 use kameo::{
-    actor::{self, ActorRef},
+    actor::{self, ActorRef, PreparedActor},
     error::BoxError,
     request::{MessageSend, TryMessageSend, TryMessageSendSync},
 };
@@ -66,54 +66,55 @@ pub struct Config {
     pub token_cache_path: String,
 }
 
-pub struct Actor {
-    pub config: Config,
-    pub client: Init<AuthCodeSpotify>,
-    pub this: Init<ActorRef<Actor>>,
+pub struct Module {
+    config: Config,
+    client: Init<AuthCodeSpotify>,
 
-    pub album_q: Arc<Queue<AlbumId<'static>>>,
-    pub track_q: Arc<Queue<TrackId<'static>>>,
+    // TODO I was able to make queue not Arc, since I no longer spawn a task to consume them
+    // This means I can also remove the mutexes from Queue implementation
+    album_q: Queue<AlbumId<'static>>,
+    track_q: Queue<TrackId<'static>>,
 
-    pub ratelimiter: RateLimiter,
+    ratelimiter: RateLimiter,
 
-    pub trigger: Init<TriggerTask<Task, Self>>,
+    // TODO I'd prefer this to be pulled in from some kind of tokio task local variable
+    this: ActorRef<Module>,
+
+    // TODO and I'd like to be able to have Tasks defined adhoc
+    // Task.trigger(actor_ref), it would look up Task in the actor_ref's task list, which would be some kind of type map
+    // Though there is an open question about Tasks with data.
+    trigger: TriggerTask<Task, Self>,
 }
 
-impl Actor {
-    pub fn new(config: Config) -> Self {
-        Self {
+pub async fn init_and_spawn(config: Config) -> ActorRef<Module> {
+    kameo::actor::spawn_with(|actor_ref| async move {
+        Module {
             config,
             client: Default::default(),
-            this: Default::default(),
+            this: actor_ref.clone(),
             album_q: Default::default(),
             track_q: Default::default(),
             ratelimiter: Default::default(),
-            trigger: Default::default(),
+            trigger: TriggerTask::new(actor_ref, Task),
         }
-    }
+    })
+    .await
 }
 
-impl kameo::Actor for Actor {
+impl kameo::Actor for Module {
     type Mailbox = kameo::mailbox::unbounded::UnboundedMailbox<Self>;
 
     #[throws(BoxError)]
     #[instrument(skip_all, err)]
-    async fn on_start(&mut self, actor_ref: ActorRef<Self>) {
+    async fn on_start(&mut self, _: ActorRef<Self>) {
         // TODO there should be a pre start method allowing the creation of the Actor to be defered to after the creation of the ActorRef
 
         let client = init::connect(&self.config).await?;
         self.client.set(client);
-        self.this.set(actor_ref.clone());
-        self.trigger.set(TriggerTask {
-            trigger: Default::default(),
-            task: Task,
-            actor_ref,
-        });
         tracing::info!("SPOTIFY LOADED");
 
         // let q = self.album_q.clone();
         // let base = self.new_request(None);
-
         // tokio::spawn(async move {
         //     loop {
         //         let mut conn = base.new(None);
@@ -132,10 +133,10 @@ impl kameo::Actor for Actor {
 }
 
 #[kameo::messages]
-impl Actor {
+impl Module {
     #[message]
     pub fn fetch_thing(&mut self, id: String) {
-        match parse_uri(&id).unwrap().0 {
+        match parse_uri(&id).context(id.clone()).unwrap().0 {
             Type::Album => {
                 self.fetch_album(vec![id]);
             }
@@ -145,7 +146,7 @@ impl Actor {
             Type::Playlist => {
                 self.fetch_playlist(id);
             }
-            _ => todo!(),
+            a => tracing::warn!(id = id, "{}: not implemented", a),
         }
     }
 
@@ -239,23 +240,23 @@ impl Actor {
         for d in data {
             match d {
                 SpotifyThing::Album(full_album) => {
-                    tracing::info!(name = &full_album.name);
+                    tracing::trace!(name = &full_album.name);
                 }
                 SpotifyThing::Track(full_track) => {
-                    tracing::info!(name = &full_track.name);
+                    tracing::trace!(name = &full_track.name);
                 }
                 SpotifyThing::Playlist(full_playlist) => {
-                    tracing::info!(name = &full_playlist.name);
-                    let mut v = Vec::new();
-                    for track in full_playlist.tracks.items {
-                        let Some(track) = track.track else { continue };
-                        let PlayableItem::Track(track) = track else {
-                            continue;
-                        };
-                        let id = track.album.id.unwrap();
-                        v.push(id.to_string());
-                    }
-                    self.fetch_album(v);
+                    tracing::trace!(name = &full_playlist.name);
+                    // let mut v = Vec::new();
+                    // for track in full_playlist.tracks.items {
+                    //     let Some(track) = track.track else { continue };
+                    //     let PlayableItem::Track(track) = track else {
+                    //         continue;
+                    //     };
+                    //     let id = track.album.id.unwrap();
+                    //     v.push(id.to_string());
+                    // }
+                    // self.fetch_album(v);
                 }
             }
         }
@@ -282,7 +283,7 @@ impl Actor {
 
     fn new_request(&self, c: Option<OwnedSemaphorePermit>) -> Conn {
         Conn {
-            actor_ref: self.this.get().clone(),
+            actor_ref: self.this.clone(),
             client: self.client.get().clone(),
             ratelimiter: self.ratelimiter.clone(),
             reqid: unique_id(),
@@ -292,7 +293,7 @@ impl Actor {
 }
 
 struct Conn {
-    actor_ref: ActorRef<Actor>,
+    actor_ref: ActorRef<Module>,
     client: AuthCodeSpotify,
     ratelimiter: RateLimiter,
     reqid: u64,
@@ -725,24 +726,22 @@ impl RateLimit {
 
 #[derive(Debug, Clone)]
 #[derive_where::derive_where(Default)]
-struct Init<T>(Option<T>);
+pub struct Init<T>(Option<T>);
 impl<T> Deref for Init<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.0
-            .as_ref()
-            .unwrap_or_else(|| panic!("unitialized thingy"))
+        self.get()
     }
 }
 
 impl<T> Init<T> {
-    fn set(&mut self, t: T) {
+    pub fn set(&mut self, t: T) {
         assert!(self.0.is_none());
         self.0 = Some(t);
     }
 
-    fn get(&self) -> &T {
+    pub fn get(&self) -> &T {
         self.0.as_ref().expect("uninitialized")
     }
 }
@@ -767,6 +766,17 @@ where
     A: kameo::Actor<Mailbox = kameo::mailbox::unbounded::UnboundedMailbox<A>>
         + kameo::message::Message<T>,
 {
+    // TODO could we avoid having to instantiate this for dataless structs?
+    // ie. Task::trigger() and it uses the current actor
+    // where does the
+    pub fn new(actor_ref: ActorRef<A>, task: T) -> Self {
+        return Self {
+            trigger: Default::default(),
+            task,
+            actor_ref,
+        };
+    }
+
     /// tell the actor to run the task, if it has not already been told
     pub fn trigger_task(&self) {
         if !self

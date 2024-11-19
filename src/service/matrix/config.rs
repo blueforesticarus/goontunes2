@@ -37,15 +37,15 @@ pub enum AuthConfig {
     Password(String), // TODO more auth methods
 }
 
-impl Config {
-    pub fn example() -> Self {
-        Self {
-            homeserver: "https://matrix.org".try_into().unwrap(),
-            username: "<username>".into(),
-            auth: AuthConfig::Password("<password>".into()),
-            matrix_crypto_store: default_store_path(),
-            channels: vec!["!n8f893n9:example.com".try_into().unwrap()],
-            matrix_crypto_pass: default_store_pass(),
-        }
-    }
-}
+// impl Config {
+//     pub fn example() -> Self {
+//         Self {
+//             homeserver: "https://matrix.org".try_into().unwrap(),
+//             username: "<username>".into(),
+//             auth: AuthConfig::Password("<password>".into()),
+//             matrix_crypto_store: default_store_path(),
+//             channels: vec!["!n8f893n9:example.com".try_into().unwrap()],
+//             matrix_crypto_pass: default_store_pass(),
+//         }
+//     }
+// }

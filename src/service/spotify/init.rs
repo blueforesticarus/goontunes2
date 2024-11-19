@@ -51,7 +51,7 @@ pub async fn connect(config: &super::Config) -> AuthCodeSpotify {
         tracing::info!(token = token.access_token);
         drop(guard); // Or else next request hangs
 
-        let user = client.current_user().await.unwrap();
+        let user = client.current_user().await.unwrap(); // XXX can fail on ratelimit
         tracing::info!(
             name = user.display_name,
             user = user.id.to_string(),

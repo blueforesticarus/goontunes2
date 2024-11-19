@@ -1,4 +1,6 @@
+use eyre::ContextCompat;
 use serenity::all::{ChannelId, GetMessages, Http};
+use serenity::Client;
 
 use crate::prelude::*;
 
@@ -9,83 +11,85 @@ use crate::service::discord::{
 };
 use crate::utils::when_even::Ignoreable;
 
-impl Module {
-    #[throws(eyre::Report)]
-    #[tracing::instrument(skip(self))]
-    pub async fn init(self: Arc<Self>) {
-        self.listen().await;
+use kameo::actor::ActorRef;
+use parking_lot::Mutex;
+use postage::{sink::Sink, stream::Stream};
+use serenity::{
+    all::CacheHttp,
+    client::{ClientBuilder, Context, EventHandler},
+    model::{
+        channel::{Message, Reaction},
+        gateway::{GatewayIntents, Ready},
+    },
+};
+use tracing::info;
 
-        for guild in self.http().get_guilds(None, None).await? {
-            add_guild(&self.db, guild.clone())
-                .await
-                .log_and_drop::<Bug>();
+pub use crate::prelude::*;
+use crate::utils::when_even::{Bug, Loggable};
 
-            for channel in self
-                .http()
-                .get_channels(guild.id)
-                .await
-                .log::<Bug>()
-                .unwrap_or_default()
-            {
-                add_channel(&self.db, serenity::all::Channel::Guild(channel))
-                    .await
-                    .log_and_drop::<Bug>();
-            }
-        }
+// honestly not sure what I should return here, a Client? an Http?, Context?
+// I would think a Client, but it does not implement clone
+#[throws(eyre::Report)]
+pub async fn connect(config: &super::Config, actor_ref: ActorRef<super::Module>) -> Context {
+    // These are only relevant to events received, not http api
+    let intents = GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::MESSAGE_CONTENT;
 
-        for channel in self.config.channels.iter() {
-            self.scan_since(ChannelId::new(channel.parse().unwrap()))
-                .await
-                .log_and_drop::<Bug>()
-        }
-    }
+    let (tx, mut rx) = postage::oneshot::channel();
+    let handler = Handler {
+        actor_ref,
+        ready_tx: tx.into(),
+    };
+    let mut client = ClientBuilder::new(&config.token, intents)
+        .event_handler(handler)
+        .await?;
 
-    #[throws(eyre::Report)]
-    #[tracing::instrument(skip(self))]
-    async fn scan_since(&self, channel_id: ChannelId) {
-        let last = get_last_message_for_channel(&self.db, channel_id)
-            .await
-            .log::<Bug>()
-            .unwrap_or_default();
-        let last = last.map(|v| v.ts).unwrap_or_default();
+    //let a = client.http.clone();
 
-        dbg!(&channel_id, last);
+    tokio::spawn(async move {
+        client.start().await.log::<Bug>().unwrap();
+    });
 
-        let mut builder = GetMessages::new();
-        loop {
-            let msgs = channel_id.messages(self.http(), builder).await?;
-
-            // TODO: This is wastefully slow for external db, but also I should batch the updates anyway
-            for msg in msgs.iter() {
-                add_message(&self.db, msg.clone())
-                    .await
-                    .log_and_drop::<Bug>();
-            }
-
-            let Some(oldest) = msgs.iter().min_by_key(|v| v.timestamp.to_utc()) else {
-                break;
-            };
-
-            dbg!(oldest.timestamp.to_utc());
-
-            if oldest.timestamp.to_utc() < last {
-                break;
-            }
-
-            //XXX issue with interruption
-            builder = builder.before(oldest.id);
-        }
-
-        dbg!();
-    }
-
-    fn http(&self) -> &Arc<Http> {
-        self.http.get().unwrap()
-    }
+    // wait for startup to finish
+    rx.recv().await.context("discord never intialied")?
 }
 
-impl AsRef<Http> for Module {
-    fn as_ref(&self) -> &Http {
-        self.http.get().unwrap()
+type Meme = Mutex<postage::oneshot::Sender<Context>>;
+struct Handler {
+    actor_ref: ActorRef<super::Module>,
+    ready_tx: Meme,
+}
+
+#[async_trait]
+impl EventHandler for Handler {
+    // Set a handler to be called on the `ready` event. This is called when a
+    // shard is booted, and a READY payload is sent by Discord. This payload
+    // contains data like the current user's guild Ids, current user data,
+    // private channels, and more.
+    //
+    // In this case, just print what the current user's username is.
+    async fn ready(&self, ctx: Context, _ready: Ready) {
+        let mut g = self.ready_tx.lock().try_send(ctx).unwrap();
+        info!("discord connected");
     }
+
+    // Set a handler for the `message` event - so that whenever a new message
+    // is received - the closure (or function) passed will be called.
+    //
+    // Event handlers are dispatched through a threadpool, and so multiple
+    // events can be dispatched simultaneously.
+    async fn message(&self, ctx: Context, msg: Message) {
+        if msg.content == "!ping" {
+            // Sending a message can fail, due to a network error, an
+            // authentication error, or lack of permissions to post in the
+            // channel, so log to stdout when some error happens, with a
+            // description of it.
+            if let Err(why) = msg.channel_id.say(&ctx.http, "Pong!").await {
+                println!("Error sending message: {:?}", why);
+            }
+        }
+    }
+
+    async fn reaction_add(&self, ctx: Context, react: Reaction) {}
 }
