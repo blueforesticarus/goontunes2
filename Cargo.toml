@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "goontunes"
 version = "0.1.0"
@@ -66,13 +68,14 @@ derive-where = "1.2.7"
 scopeguard = "1.2.0"
 rand = "0.8.5"
 config = "0.14.1"
-serde_json_diff = "0.2.0"
+# serde_json_diff = "0.2.0"
 jaq-core = "2.0.0-delta"
 jaq-json = { version = "1.0.0-delta", features = ["serde_json"] }
 jaq-std = "2.0.0-delta"
 type-map = "0.2.0"
 derive-new = "0.7.0"
 venator = "0.2.0"
+json_diff_ng = "0.6.0"
 #venator = "0.2.0"
 
 [patch.crates-io]

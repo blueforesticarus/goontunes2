@@ -1606,6 +1606,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "339544cc9e2c4dc3fc7149fd630c5f22263a4fdf18a98afd0075784968b5cf00"
 
 [[package]]
+name = "diffs"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff116c9781d74b71b9b8958281309dd2faaeabad2f0a3df27e50bd79ce5dc805"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2297,6 +2303,7 @@ dependencies = [
  "jaq-core",
  "jaq-json",
  "jaq-std",
+ "json_diff_ng",
  "kameo",
  "lazy_static",
  "linkify",
@@ -2312,7 +2319,6 @@ dependencies = [
  "scopeguard",
  "serde",
  "serde_json",
- "serde_json_diff",
  "serde_with",
  "serenity",
  "shellexpand",
@@ -3130,6 +3136,20 @@ dependencies = [
  "pest",
  "pest_derive",
  "serde",
+]
+
+[[package]]
+name = "json_diff_ng"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "941b0c4ee9d01c0438aa8eb8fc24efab4b119c218cf1acb98e76619868eeca9b"
+dependencies = [
+ "clap",
+ "diffs",
+ "regex",
+ "serde_json",
+ "thiserror 1.0.69",
+ "vg_errortools",
 ]
 
 [[package]]
@@ -5758,16 +5778,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_json_diff"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eac615f2de9556d78ec9d5924abae441d1764f833fbd6db24bb56d2b6b5200ed"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "serde_spanned"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7142,6 +7152,15 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vg_errortools"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f0d7932688493f8aac7d65e824820b6506fe68ae7450bf44ac7299b1841a4a6"
+dependencies = [
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "vodozemac"
