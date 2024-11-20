@@ -1,5 +1,3 @@
-cargo-features = ["profile-rustflags"]
-
 [package]
 name = "goontunes"
 version = "0.1.0"
@@ -9,10 +7,8 @@ edition = "2021"
 
 [dependencies]
 # basic
-clap = { version = "4.5.4", features = ["env", "derive"] }
+clap = { version = "4.5.4", features = ["derive", "env"] }
 color-eyre = "0.6.3"
-dirs = "5.0.1"
-env_logger = "0.11.3"
 eyre = "0.6.12"
 futures = "0.3.30"
 url = "2.5.0"
@@ -27,48 +23,35 @@ serde = "*"
 serde_json = "*"
 
 # matrix support
-matrix-sdk = { version = "0.7.1", features = ["eyre", "e2e-encryption", "markdown"] }
+matrix-sdk = { version = "0.7.1", features = ["eyre", "markdown"] }
 matrix-sdk-crypto = "0.7.1"
 matrix-sdk-sqlite = "0.7.1"
-
-# spotify support
 rspotify = { version = "0.13.3", features = ["cli"] }
 
 # discord support
-serenity = { version = "0.12.2", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "chrono", "http"] } # disable default `framework` feature
+serenity = { version = "0.12.2", default-features = false, features = ["chrono", "client", "gateway", "model", "rustls_backend"] } # disable default `framework` feature
 
 # database support
-surrealdb = {version = "2.0.3", features = ["kv-rocksdb", "kv-mem"]}
-# surrealdb = {git = "https://github.com/surrealdb/surrealdb", version = "1.4.2", features = ["kv-rocksdb", "kv-mem"]}
-# surrealdb-core = { git = "https://github.com/surrealdb/surrealdb" }
-
+surrealdb = { version = "2.0.3", features = ["kv-mem", "kv-rocksdb"] }
 serde_with = "3.4.0"
 async-trait = "0.1.64"
 shellexpand = { version = "3.0.0", features = ["path"] }
 hostname = "0.4.0"
 postage = "0.5.0"
-uuid = "1.3.0"
 parking_lot = "0.12.1"
-derive_more = "0.99.17"
 tracing = "0.1.37"
 derivative = "2.2.0"
 itertools = "0.13.0"
-async-stream = "0.3.5"
 similar = "2.2.1"
-derive-name = "1.1.0"
 rustyline-async = "0.4.2"
 
 culpa = "1.0.2"
 enum_extract = "0.1.1"
-toml = "0.8.12"
-taps = "0.2.2"
 kameo = "0.13.0"
 async-condvar-fair = "1.0.1"
 derive-where = "1.2.7"
-scopeguard = "1.2.0"
 rand = "0.8.5"
 config = "0.14.1"
-# serde_json_diff = "0.2.0"
 jaq-core = "2.0.0-delta"
 jaq-json = { version = "1.0.0-delta", features = ["serde_json"] }
 jaq-std = "2.0.0-delta"

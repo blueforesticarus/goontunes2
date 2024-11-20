@@ -1154,7 +1154,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68578f196d2a33ff61b27fae256c3164f65e36382648e30666dde05b8cc9dfdf"
 dependencies = [
  "async-trait",
- "convert_case 0.6.0",
+ "convert_case",
  "json5",
  "nom",
  "pathdiff",
@@ -1203,12 +1203,6 @@ name = "constant_time_eq"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
-
-[[package]]
-name = "convert_case"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
 name = "convert_case"
@@ -1558,25 +1552,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive-name"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a19af109a7f1118ab96e1fd2a0c87310787f791680fa71b4bbfa5dffbc358b08"
-dependencies = [
- "derive-name-macros",
-]
-
-[[package]]
-name = "derive-name-macros"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa60999fb9292247d7c7eec5dada22b4ba337394612b0d935616bf49964c8bfd"
-dependencies = [
- "quote",
- "syn 2.0.87",
-]
-
-[[package]]
 name = "derive-new"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1595,19 +1570,6 @@ checksum = "62d671cc41a825ebabc75757b62d3d168c577f9149b2d49ece1dad1f72119d25"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.87",
-]
-
-[[package]]
-name = "derive_more"
-version = "0.99.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f33878137e4dafd7fa914ad4e259e18a4e8e532b9617a2d0150262bf53abfce"
-dependencies = [
- "convert_case 0.4.0",
- "proc-macro2",
- "quote",
- "rustc_version",
  "syn 2.0.87",
 ]
 
@@ -1812,29 +1774,6 @@ name = "enum_extract"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11578f9e8496eeb626c549e1b340a57e479840ff7ae13fe12d4dbd97c18779d1"
-
-[[package]]
-name = "env_filter"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f2c92ceda6ceec50f43169f9ee8424fe2db276791afde7b2cd8bc084cb376ab"
-dependencies = [
- "log",
- "regex",
-]
-
-[[package]]
-name = "env_logger"
-version = "0.11.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13fa619b91fb2381732789fc5de83b45675e882f66623b7d8cb4f643017018d"
-dependencies = [
- "anstream",
- "anstyle",
- "env_filter",
- "humantime",
- "log",
-]
 
 [[package]]
 name = "equivalent"
@@ -2293,7 +2232,6 @@ name = "goontunes"
 version = "0.1.0"
 dependencies = [
  "async-condvar-fair",
- "async-stream",
  "async-trait",
  "chrono",
  "clap",
@@ -2302,13 +2240,9 @@ dependencies = [
  "config",
  "culpa",
  "derivative",
- "derive-name",
  "derive-new",
  "derive-where",
- "derive_more",
- "dirs",
  "enum_extract",
- "env_logger",
  "eyre",
  "futures",
  "hostname",
@@ -2329,7 +2263,6 @@ dependencies = [
  "regex",
  "rspotify",
  "rustyline-async",
- "scopeguard",
  "serde",
  "serde_json",
  "serde_with",
@@ -2338,14 +2271,11 @@ dependencies = [
  "similar",
  "strum",
  "surrealdb",
- "taps",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
  "type-map",
  "url",
- "uuid",
  "venator",
 ]
 
@@ -3046,9 +2976,9 @@ dependencies = [
 
 [[package]]
 name = "itoa"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
+checksum = "7a73e9fe3c49d7afb2ace819fa181a287ce54a0983eda4e0eb05c22f82ffe534"
 
 [[package]]
 name = "jaq-core"
@@ -6420,15 +6350,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
-name = "taps"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c13e63bb8b09778fbb35ba6efb07213e9ba569c314bf4deedb495222aa6f4d17"
-dependencies = [
- "tokio",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7026,9 +6947,9 @@ checksum = "7e51b68083f157f853b6379db119d1c1be0e6e4dec98101079dec41f6f5cf6df"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.13"
+version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91b56cd4cadaeb79bbf1a5645f6b4f8dc5bde8834ad5894a8db35fda9efa1fe"
+checksum = "adb9e6ca4f869e1180728b7950e35922a7fc6397f7b641499e8f3ef06e50dc83"
 
 [[package]]
 name = "unicode-normalization"

@@ -1,20 +1,22 @@
+[unstable]
+profile-rustflags = true
+codegen-backend = true
 
 [profile.dev]
 incremental = true
-opt-level = 1
+opt-level = 0
 codegen-backend = "cranelift"
-rustflags = ["-Z", "threads=8", "-Cprefer-dynamic"]
+rustflags = [
+	"-Zthreads=0", #num cores
+	"-Zshare-generics=y",
+	"-Cprefer-dynamic"
+]
+
+# This applies to proc macros, which are executed during build, but ought to be caught by below.
+[profile.dev.build-override]
+opt-level = 3
 
 [profile.dev.package."*"]
 incremental = false
-opt-level = 3
 codegen-backend = "llvm"
-
-[target.x86_64-unknown-linux-gnu]
-rustflags = [
-  # (Nightly) Make the current crate share its generic instantiations
-  "-Zshare-generics=y",
-]
-
-[unstable]
-codegen-backend = true
+opt-level = 3
